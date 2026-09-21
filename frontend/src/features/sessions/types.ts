@@ -37,7 +37,7 @@ export interface ExamSession {
     seat_layout_available: boolean
     candidates_assigned: number
     video_configured: boolean
-    monitoring_status: 'NOT_STARTED'
+    monitoring_status: 'NOT_STARTED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'ERROR' | 'CANCELLED'
     can_mark_ready: boolean
   }
   created_at: string

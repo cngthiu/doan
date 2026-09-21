@@ -1,0 +1,244 @@
+from __future__ import annotations
+
+import logging
+import threading
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+from app.ai.detector.yolo import PersonDetector
+from app.monitoring.config import RuntimeProfile
+from app.monitoring.publisher import LatestWebSocketPublisher, Subscriber
+from app.monitoring.worker import VideoAnalysisWorker
+
+logger = logging.getLogger(__name__)
+
+
+class RuntimeState(StrEnum):
+    INACTIVE = "INACTIVE"
+    INITIALIZING = "INITIALIZING"
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    COMPLETED = "COMPLETED"
+    ERROR = "ERROR"
+
+
+@dataclass(slots=True)
+class RuntimeHandle:
+    worker: VideoAnalysisWorker
+    profile: RuntimeProfile
+    publisher: LatestWebSocketPublisher
+    state: RuntimeState = RuntimeState.INITIALIZING
+    synchronizing: bool = True
+    error: str | None = None
+    latest_diagnostics: dict[str, Any] | None = None
+
+
+class MonitoringRuntimeManager:
+    def __init__(
+        self,
+        *,
+        worker_factory: Callable[..., VideoAnalysisWorker] = VideoAnalysisWorker,
+        terminal_callback: Callable[[uuid.UUID, RuntimeState, str | None], None] | None = None,
+    ) -> None:
+        self._lock = threading.RLock()
+        self._handles: dict[uuid.UUID, RuntimeHandle] = {}
+        self._worker_factory = worker_factory
+        self._terminal_callback = terminal_callback
+
+    def start(
+        self,
+        session_id: uuid.UUID,
+        video_path: Path,
+        profile: RuntimeProfile,
+        timestamp_ms: int,
+    ) -> dict[str, Any]:
+        PersonDetector.validate_environment(profile.detector)
+        with self._lock:
+            existing = self._handles.get(session_id)
+            if existing and existing.state in {
+                RuntimeState.INITIALIZING,
+                RuntimeState.RUNNING,
+                RuntimeState.PAUSED,
+            }:
+                raise RuntimeError("Monitoring runtime đã hoạt động")
+            publisher = LatestWebSocketPublisher()
+            worker = self._worker_factory(
+                session_id=session_id,
+                video_path=video_path,
+                profile=profile,
+                start_timestamp_ms=timestamp_ms,
+                publish=lambda message: self._publish(session_id, message),
+                on_ready=lambda: self._mark_ready(session_id),
+                on_complete=lambda: self._terminal(session_id, RuntimeState.COMPLETED, None),
+                on_error=lambda error: self._terminal(session_id, RuntimeState.ERROR, error),
+            )
+            handle = RuntimeHandle(worker=worker, profile=profile, publisher=publisher)
+            self._handles[session_id] = handle
+            worker.start()
+            self._publish_state(session_id)
+            return self.status(session_id)
+
+    def pause(self, session_id: uuid.UUID, timestamp_ms: int | None = None) -> dict[str, Any]:
+        handle = self._require_state(session_id, {RuntimeState.RUNNING})
+        handle.worker.pause(timestamp_ms)
+        self._set_state(session_id, RuntimeState.PAUSED)
+        return self.status(session_id)
+
+    def resume(self, session_id: uuid.UUID, timestamp_ms: int | None = None) -> dict[str, Any]:
+        handle = self._require_state(session_id, {RuntimeState.PAUSED})
+        handle.worker.resume(timestamp_ms)
+        self._set_state(
+            session_id,
+            RuntimeState.RUNNING,
+            synchronizing=timestamp_ms is not None,
+        )
+        return self.status(session_id)
+
+    def seek(self, session_id: uuid.UUID, timestamp_ms: int) -> dict[str, Any]:
+        handle = self._require_state(session_id, {RuntimeState.RUNNING, RuntimeState.PAUSED})
+        handle.worker.seek(timestamp_ms)
+        self._publish_state(session_id, synchronizing=True)
+        return self.status(session_id)
+
+    def stop(self, session_id: uuid.UUID) -> dict[str, Any]:
+        handle = self._require_state(
+            session_id,
+            {RuntimeState.INITIALIZING, RuntimeState.RUNNING, RuntimeState.PAUSED},
+        )
+        if handle.worker.stop() is False:
+            raise RuntimeError("Monitoring runtime không thể dừng sạch trong thời gian cho phép")
+        self._set_state(session_id, RuntimeState.COMPLETED, synchronizing=False)
+        return self.status(session_id)
+
+    def status(self, session_id: uuid.UUID) -> dict[str, Any]:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None:
+                return {
+                    "session_id": str(session_id),
+                    "state": RuntimeState.INACTIVE.value,
+                    "profile": None,
+                    "error": None,
+                    "subscriber_count": 0,
+                    "queue_size": 0,
+                    "dropped_analysis_frames": 0,
+                    "diagnostics": None,
+                }
+            return {
+                "session_id": str(session_id),
+                "state": handle.state.value,
+                "profile": handle.profile.profile,
+                "error": handle.error,
+                "subscriber_count": handle.publisher.subscriber_count,
+                "queue_size": handle.worker.queue_size,
+                "dropped_analysis_frames": handle.worker.dropped_analysis_frames,
+                "diagnostics": handle.latest_diagnostics,
+            }
+
+    def subscribe(self, session_id: uuid.UUID) -> Subscriber:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None:
+                raise RuntimeError("Monitoring runtime chưa được khởi tạo")
+            subscriber = handle.publisher.subscribe()
+        self._publish_state(session_id)
+        return subscriber
+
+    def unsubscribe(self, session_id: uuid.UUID, subscriber_id: uuid.UUID) -> None:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is not None:
+                handle.publisher.unsubscribe(subscriber_id)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            handles = tuple(self._handles.values())
+        for handle in handles:
+            if handle.worker.stop() is False:
+                logger.error("Monitoring worker did not stop cleanly during application shutdown")
+
+    def _require_state(
+        self,
+        session_id: uuid.UUID,
+        allowed: set[RuntimeState],
+    ) -> RuntimeHandle:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None or handle.state not in allowed:
+                current = handle.state.value if handle else RuntimeState.INACTIVE.value
+                raise RuntimeError(f"Trạng thái runtime không hợp lệ: {current}")
+            return handle
+
+    def _publish(self, session_id: uuid.UUID, message: dict[str, Any]) -> None:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None:
+                return
+            if message.get("type") == "diagnostics":
+                handle.latest_diagnostics = message
+            elif message.get("type") == "tracking":
+                handle.synchronizing = False
+            publisher = handle.publisher
+        publisher.publish(message)
+
+    def _set_state(
+        self,
+        session_id: uuid.UUID,
+        state: RuntimeState,
+        *,
+        synchronizing: bool | None = None,
+    ) -> None:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None:
+                return
+            handle.state = state
+            if synchronizing is not None:
+                handle.synchronizing = synchronizing
+        self._publish_state(session_id)
+
+    def _mark_ready(self, session_id: uuid.UUID) -> None:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None or handle.state != RuntimeState.INITIALIZING:
+                return
+            handle.state = RuntimeState.RUNNING
+        self._publish_state(session_id)
+
+    def _terminal(
+        self,
+        session_id: uuid.UUID,
+        state: RuntimeState,
+        error: str | None,
+    ) -> None:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None or handle.state in {RuntimeState.COMPLETED, RuntimeState.ERROR}:
+                return
+            handle.state = state
+            handle.synchronizing = False
+            handle.error = error
+        self._publish_state(session_id)
+        if self._terminal_callback is not None:
+            self._terminal_callback(session_id, state, error)
+
+    def _publish_state(self, session_id: uuid.UUID, *, synchronizing: bool = False) -> None:
+        with self._lock:
+            handle = self._handles.get(session_id)
+            if handle is None:
+                return
+            if synchronizing:
+                handle.synchronizing = True
+            message = {
+                "type": "state",
+                "session_id": str(session_id),
+                "state": handle.state.value,
+                "synchronizing": handle.synchronizing,
+                "error": handle.error,
+            }
+            publisher = handle.publisher
+        publisher.publish(message)

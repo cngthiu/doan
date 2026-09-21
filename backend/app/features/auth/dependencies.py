@@ -15,6 +15,7 @@ from app.db.session import get_db
 
 bearer_scheme = HTTPBearer(auto_error=False)
 MEDIA_COOKIE_NAME = "examguard_media_access"
+WEBSOCKET_COOKIE_NAME = "examguard_ws_access"
 DatabaseSession = Annotated[Session, Depends(get_db)]
 ApplicationSettings = Annotated[Settings, Depends(get_settings)]
 
@@ -27,6 +28,19 @@ def authentication_error() -> ApiError:
     )
 
 
+def resolve_user_from_token(db: Session, settings: Settings, token: str) -> User:
+    try:
+        user_id: uuid.UUID = decode_access_token(token, settings)
+    except (jwt.InvalidTokenError, ValueError):
+        raise authentication_error() from None
+    user = db.get(User, user_id)
+    if user is None:
+        raise authentication_error()
+    if not user.is_active:
+        raise ApiError(status.HTTP_403_FORBIDDEN, "USER_INACTIVE", "User is inactive")
+    return user
+
+
 def get_current_user(
     db: DatabaseSession,
     settings: ApplicationSettings,
@@ -34,17 +48,7 @@ def get_current_user(
 ) -> User:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise authentication_error()
-    try:
-        user_id: uuid.UUID = decode_access_token(credentials.credentials, settings)
-    except (jwt.InvalidTokenError, ValueError):
-        raise authentication_error() from None
-
-    user = db.get(User, user_id)
-    if user is None:
-        raise authentication_error()
-    if not user.is_active:
-        raise ApiError(status.HTTP_403_FORBIDDEN, "USER_INACTIVE", "User is inactive")
-    return user
+    return resolve_user_from_token(db, settings, credentials.credentials)
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
@@ -59,16 +63,7 @@ def get_media_user(
     token = credentials.credentials if credentials is not None else media_cookie
     if token is None:
         raise authentication_error()
-    try:
-        user_id: uuid.UUID = decode_access_token(token, settings)
-    except (jwt.InvalidTokenError, ValueError):
-        raise authentication_error() from None
-    user = db.get(User, user_id)
-    if user is None:
-        raise authentication_error()
-    if not user.is_active:
-        raise ApiError(status.HTTP_403_FORBIDDEN, "USER_INACTIVE", "User is inactive")
-    return user
+    return resolve_user_from_token(db, settings, token)
 
 
 MediaUser = Annotated[User, Depends(get_media_user)]
@@ -91,6 +86,10 @@ def require_roles(*roles: UserRole) -> Callable[[CurrentUser], User]:
 
 AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
 SessionEditor = Annotated[
+    User,
+    Depends(require_roles(UserRole.ADMIN, UserRole.SUPERVISOR)),
+]
+MonitoringOperator = Annotated[
     User,
     Depends(require_roles(UserRole.ADMIN, UserRole.SUPERVISOR)),
 ]

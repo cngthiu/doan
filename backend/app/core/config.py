@@ -15,7 +15,12 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["development", "test", "production"] = Field(alias="APP_ENV")
+    app_profile: Literal["gtx1650", "rtx3060"] = Field(
+        default="gtx1650",
+        alias="APP_PROFILE",
+    )
     database_url: str = Field(alias="DATABASE_URL", min_length=1)
+    database_password: SecretStr | None = Field(default=None, alias="DATABASE_PASSWORD")
     jwt_secret: SecretStr = Field(alias="JWT_SECRET")
     jwt_algorithm: Literal["HS256"] = Field(default="HS256", alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(
@@ -26,6 +31,7 @@ class Settings(BaseSettings):
     upload_root: Path = Field(alias="UPLOAD_ROOT")
     evidence_root: Path = Field(alias="EVIDENCE_ROOT")
     model_root: Path = Field(alias="MODEL_ROOT")
+    config_root: Path = Field(default=Path("/app/configs"), alias="CONFIG_ROOT")
     max_upload_bytes: int = Field(
         default=4 * 1024 * 1024 * 1024,
         alias="MAX_UPLOAD_BYTES",

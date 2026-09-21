@@ -4,6 +4,7 @@ from app.core.errors import ApiError
 from app.core.security import create_access_token
 from app.features.auth.dependencies import (
     MEDIA_COOKIE_NAME,
+    WEBSOCKET_COOKIE_NAME,
     ApplicationSettings,
     CurrentUser,
     DatabaseSession,
@@ -23,6 +24,15 @@ def set_media_cookie(response: Response, access_token: str, settings: Applicatio
         secure=settings.app_env == "production",
         samesite="strict",
         path="/api/v1/media",
+    )
+    response.set_cookie(
+        key=WEBSOCKET_COOKIE_NAME,
+        value=access_token,
+        max_age=settings.access_token_expire_minutes * 60,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="strict",
+        path="/ws",
     )
 
 
@@ -56,6 +66,12 @@ def logout(response: Response) -> None:
     response.delete_cookie(
         key=MEDIA_COOKIE_NAME,
         path="/api/v1/media",
+        httponly=True,
+        samesite="strict",
+    )
+    response.delete_cookie(
+        key=WEBSOCKET_COOKIE_NAME,
+        path="/ws",
         httponly=True,
         samesite="strict",
     )

@@ -85,7 +85,11 @@ def _readiness(
         seat_layout_available=seat_count > 0,
         candidates_assigned=candidate_count,
         video_configured=video_asset_id is not None,
-        monitoring_status="NOT_STARTED",
+        monitoring_status=(
+            "NOT_STARTED"
+            if exam_session.status in {ExamSessionStatus.DRAFT.value, ExamSessionStatus.READY.value}
+            else exam_session.status
+        ),
         can_mark_ready=(
             room.is_active
             and seat_count > 0

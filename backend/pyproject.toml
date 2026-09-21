@@ -19,9 +19,11 @@ dependencies = [
     "opencv-python-headless==4.12.0.88",
     "PyYAML==6.0.3",
     "Pillow==12.3.0",
-    "ultralytics>=8.3.0,<9",
-    "lap>=0.5.12,<0.6",
-    "websockets>=15,<17",
+    "ultralytics==8.4.155",
+    "lap==0.5.12",
+    "websockets==16.0",
+    "psutil==7.2.2",
+    "nvidia-ml-py==13.610.43",
 ]
 
 [project.optional-dependencies]
@@ -53,6 +55,7 @@ select = ["E", "F", "I", "B", "UP"]
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]
+markers = ["gpu: optional test requiring CUDA and the YOLO11n model artifact"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -62,6 +65,10 @@ no_implicit_optional = true
 
 [tool.uv]
 package = false
+environments = ["sys_platform == 'linux'"]
+exclude-dependencies = [
+    { package = { name = "ultralytics", version = "8.4.155" }, dependencies = ["opencv-python"] },
+]
 conflicts = [
     [
         { extra = "cpu" },

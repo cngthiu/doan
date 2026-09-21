@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 
 export function formatVideoTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '00:00'
@@ -10,8 +10,19 @@ export function formatVideoTime(seconds: number): string {
   return hours ? `${String(hours).padStart(2, '0')}:${base}` : base
 }
 
-export const VideoPlayer = forwardRef<HTMLVideoElement, { src: string; title: string }>(
-  ({ src, title }, forwardedRef) => {
+interface VideoPlayerProps {
+  src: string
+  title: string
+  overlay?: ReactNode
+  onPause?(video: HTMLVideoElement): void
+  onPlay?(video: HTMLVideoElement): void
+  onSeeking?(video: HTMLVideoElement): void
+  onSeeked?(video: HTMLVideoElement): void
+  onEnded?(video: HTMLVideoElement): void
+}
+
+export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
+  ({ src, title, overlay, onPause, onPlay, onSeeking, onSeeked, onEnded }, forwardedRef) => {
     const videoRef = useRef<HTMLVideoElement>(null)
     const wrapperRef = useRef<HTMLDivElement>(null)
     const [playing, setPlaying] = useState(false)
@@ -55,14 +66,24 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, { src: string; title: st
           preload="metadata"
           playsInline
           onLoadStart={() => setLoading(true)}
-          onLoadedMetadata={(event) => { setDuration(event.currentTarget.duration); setLoading(false) }}
+          onLoadedMetadata={(event) => {
+            event.currentTarget.playbackRate = 1
+            setDuration(event.currentTarget.duration)
+            setLoading(false)
+          }}
           onCanPlay={() => setLoading(false)}
           onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
+          onPlay={(event) => { setPlaying(true); onPlay?.(event.currentTarget) }}
+          onPause={(event) => { setPlaying(false); onPause?.(event.currentTarget) }}
+          onSeeking={(event) => onSeeking?.(event.currentTarget)}
+          onSeeked={(event) => onSeeked?.(event.currentTarget)}
+          onRateChange={(event) => {
+            if (event.currentTarget.playbackRate !== 1) event.currentTarget.playbackRate = 1
+          }}
+          onEnded={(event) => { setPlaying(false); onEnded?.(event.currentTarget) }}
           onError={() => { setLoading(false); setError('Không thể tải hoặc giải mã video.') }}
         />
+        {overlay}
         {loading && <div className="video-state">Đang tải video…</div>}
         {error && <div className="video-state error">{error}</div>}
       </div>

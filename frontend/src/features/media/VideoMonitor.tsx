@@ -1,10 +1,21 @@
-import { forwardRef } from 'react'
+import { forwardRef, type ReactNode } from 'react'
 
 import { VideoPlayer } from './VideoPlayer'
 
-export const VideoMonitor = forwardRef<HTMLVideoElement, { mediaUrl: string; title: string }>(
-  ({ mediaUrl, title }, ref) => <div className="video-monitor">
-    <VideoPlayer ref={ref} src={mediaUrl} title={title} />
+interface VideoMonitorProps {
+  mediaUrl: string
+  title: string
+  overlay?: ReactNode
+  onPause?(video: HTMLVideoElement): void
+  onPlay?(video: HTMLVideoElement): void
+  onSeeking?(video: HTMLVideoElement): void
+  onSeeked?(video: HTMLVideoElement): void
+  onEnded?(video: HTMLVideoElement): void
+}
+
+export const VideoMonitor = forwardRef<HTMLVideoElement, VideoMonitorProps>(
+  ({ mediaUrl, title, ...events }, ref) => <div className="video-monitor">
+    <VideoPlayer ref={ref} src={mediaUrl} title={title} {...events} />
   </div>,
 )
 

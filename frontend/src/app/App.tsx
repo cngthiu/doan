@@ -3,11 +3,12 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { LoginPage } from '../features/auth/LoginPage'
 import { ProtectedRoute } from '../features/auth/ProtectedRoute'
 import { CandidatesPage } from '../features/candidates/CandidatesPage'
+import { MonitoringPage } from '../features/monitoring/MonitoringPage'
 import { RoomsPage } from '../features/rooms/RoomsPage'
 import { SessionDetailPage } from '../features/sessions/SessionDetailPage'
 import { SessionsPage } from '../features/sessions/SessionsPage'
 import { AppShell } from '../shared/layout/AppShell'
-import { EmptyFeaturePage, MonitoringPage } from '../shared/pages/PlaceholderPages'
+import { EmptyFeaturePage } from '../shared/pages/PlaceholderPages'
 
 export function App() {
   return (

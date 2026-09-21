@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal, cast
+
+import yaml  # type: ignore[import-untyped]
+from pydantic import BaseModel, Field, model_validator
+
+from app.core.config import Settings
+
+
+class AnalysisConfig(BaseModel):
+    target_fps: float = Field(gt=0)
+    minimum_fps: float = Field(gt=0)
+    queue_size: Literal[1]
+    drop_stale_frames: Literal[True]
+
+
+class DetectorConfig(BaseModel):
+    model: Path
+    imgsz: int = Field(gt=0)
+    conf: float = Field(ge=0, le=1)
+    iou: float = Field(ge=0, le=1)
+    classes: list[int]
+    max_det: int = Field(gt=0)
+    half: bool
+    device: str = "cuda:0"
+
+    @model_validator(mode="after")
+    def person_only(self) -> DetectorConfig:
+        if self.classes != [0]:
+            raise ValueError("Phase 4 detector must use COCO person class only")
+        return self
+
+
+class ByteTrackConfig(BaseModel):
+    tracker_type: Literal["bytetrack"]
+    track_high_thresh: float = Field(ge=0, le=1)
+    track_low_thresh: float = Field(ge=0, le=1)
+    new_track_thresh: float = Field(ge=0, le=1)
+    track_buffer: int = Field(gt=0)
+    match_thresh: float = Field(ge=0, le=1)
+    fuse_score: bool
+
+
+class DiagnosticsConfig(BaseModel):
+    publish_hz: float = Field(gt=0, le=10)
+
+
+class RuntimeProfile(BaseModel):
+    profile: Literal["gtx1650", "rtx3060"]
+    device: str
+    precision: Literal["fp16"]
+    analysis: AnalysisConfig
+    detector: DetectorConfig
+    tracker: ByteTrackConfig
+    diagnostics: DiagnosticsConfig
+
+
+def _yaml_mapping(path: Path) -> dict[str, object]:
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ValueError(f"Không thể đọc cấu hình {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"Cấu hình {path} phải là YAML mapping")
+    return payload
+
+
+def load_runtime_profile(settings: Settings, profile_name: str | None = None) -> RuntimeProfile:
+    return load_runtime_profile_from_paths(
+        config_root=settings.config_root,
+        model_root=settings.model_root,
+        profile_name=profile_name or settings.app_profile,
+    )
+
+
+def load_runtime_profile_from_paths(
+    *,
+    config_root: Path,
+    model_root: Path,
+    profile_name: str,
+) -> RuntimeProfile:
+    name = profile_name
+    if name not in {"gtx1650", "rtx3060"}:
+        raise ValueError(f"Runtime profile không được hỗ trợ: {name}")
+    validated_name = cast(Literal["gtx1650", "rtx3060"], name)
+    payload = _yaml_mapping(config_root / "runtime" / f"{name}.yaml")
+    runtime = payload.get("runtime")
+    detector = payload.get("detector")
+    tracker = payload.get("tracker")
+    if (
+        not isinstance(runtime, dict)
+        or not isinstance(detector, dict)
+        or not isinstance(tracker, dict)
+    ):
+        raise ValueError("Runtime, detector và tracker configuration là bắt buộc")
+
+    model = Path(str(detector.get("model", "")))
+    if model.is_absolute() and model.parts[:2] == ("/", "models"):
+        model = model_root.joinpath(*model.parts[2:])
+    detector_payload = {**detector, "model": model, "device": runtime.get("device")}
+
+    tracker_path = Path(str(tracker.get("config", "")))
+    if tracker_path.is_absolute() and tracker_path.parts[:3] == ("/", "app", "configs"):
+        tracker_path = config_root.joinpath(*tracker_path.parts[3:])
+
+    if runtime.get("precision") != "fp16":
+        raise ValueError("Phase 4 runtime precision phải là fp16")
+    return RuntimeProfile(
+        profile=validated_name,
+        device=str(runtime.get("device")),
+        precision="fp16",
+        analysis=AnalysisConfig.model_validate(payload.get("analysis")),
+        detector=DetectorConfig.model_validate(detector_payload),
+        tracker=ByteTrackConfig.model_validate(_yaml_mapping(tracker_path)),
+        diagnostics=DiagnosticsConfig.model_validate(payload.get("diagnostics")),
+    )

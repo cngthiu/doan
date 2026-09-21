@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
         --no-dev \
         --no-install-project \
         --extra cu126 \
-    && python -c "import lap, torch, torchvision, ultralytics, websockets; assert torch.__version__ == '2.7.1+cu126'; assert torchvision.__version__ == '0.22.1+cu126'; print('GPU runtime imports OK:', ultralytics.__version__, websockets.__version__)"
+    && python -c "import cv2, lap, torch, torchvision, ultralytics, websockets; assert torch.__version__ == '2.7.1+cu126'; assert torchvision.__version__ == '0.22.1+cu126'; print('GPU runtime imports OK:', cv2.__version__, ultralytics.__version__, websockets.__version__)"
 
 COPY . .
 
