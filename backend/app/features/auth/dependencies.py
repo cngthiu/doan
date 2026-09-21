@@ -1,0 +1,96 @@
+import uuid
+from collections.abc import Callable
+from typing import Annotated
+
+import jwt
+from fastapi import Cookie, Depends, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings, get_settings
+from app.core.errors import ApiError
+from app.core.security import decode_access_token
+from app.db.models.user import User, UserRole
+from app.db.session import get_db
+
+bearer_scheme = HTTPBearer(auto_error=False)
+MEDIA_COOKIE_NAME = "examguard_media_access"
+DatabaseSession = Annotated[Session, Depends(get_db)]
+ApplicationSettings = Annotated[Settings, Depends(get_settings)]
+
+
+def authentication_error() -> ApiError:
+    return ApiError(
+        status.HTTP_401_UNAUTHORIZED,
+        "AUTHENTICATION_REQUIRED",
+        "Authentication required",
+    )
+
+
+def get_current_user(
+    db: DatabaseSession,
+    settings: ApplicationSettings,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> User:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise authentication_error()
+    try:
+        user_id: uuid.UUID = decode_access_token(credentials.credentials, settings)
+    except (jwt.InvalidTokenError, ValueError):
+        raise authentication_error() from None
+
+    user = db.get(User, user_id)
+    if user is None:
+        raise authentication_error()
+    if not user.is_active:
+        raise ApiError(status.HTTP_403_FORBIDDEN, "USER_INACTIVE", "User is inactive")
+    return user
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def get_media_user(
+    db: DatabaseSession,
+    settings: ApplicationSettings,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    media_cookie: Annotated[str | None, Cookie(alias=MEDIA_COOKIE_NAME)] = None,
+) -> User:
+    token = credentials.credentials if credentials is not None else media_cookie
+    if token is None:
+        raise authentication_error()
+    try:
+        user_id: uuid.UUID = decode_access_token(token, settings)
+    except (jwt.InvalidTokenError, ValueError):
+        raise authentication_error() from None
+    user = db.get(User, user_id)
+    if user is None:
+        raise authentication_error()
+    if not user.is_active:
+        raise ApiError(status.HTTP_403_FORBIDDEN, "USER_INACTIVE", "User is inactive")
+    return user
+
+
+MediaUser = Annotated[User, Depends(get_media_user)]
+
+
+def require_roles(*roles: UserRole) -> Callable[[CurrentUser], User]:
+    allowed = {role.value for role in roles}
+
+    def role_dependency(current_user: CurrentUser) -> User:
+        if current_user.role not in allowed:
+            raise ApiError(
+                status.HTTP_403_FORBIDDEN,
+                "FORBIDDEN",
+                "Insufficient permissions",
+            )
+        return current_user
+
+    return role_dependency
+
+
+AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
+SessionEditor = Annotated[
+    User,
+    Depends(require_roles(UserRole.ADMIN, UserRole.SUPERVISOR)),
+]

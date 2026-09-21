@@ -1,0 +1,452 @@
+import uuid
+from datetime import datetime
+
+from fastapi import status
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings
+from app.core.errors import ApiError
+from app.db.models.candidate import Candidate
+from app.db.models.media import MediaAsset
+from app.db.models.room import Room, Seat
+from app.db.models.session import ExamSession, ExamSessionStatus, SessionCandidate
+from app.db.models.user import User, UserRole
+from app.features.media.service import media_file_path, media_response
+from app.features.sessions.schemas import (
+    CandidateSummary,
+    MediaSummary,
+    RoomSummary,
+    SeatSummary,
+    SessionAssignmentResponse,
+    SessionCandidatesUpdate,
+    SessionCreate,
+    SessionReadiness,
+    SessionResponse,
+    SessionUpdate,
+)
+from app.shared.audit import AuditAction, AuditService
+
+
+def session_or_error(db: Session, session_id: uuid.UUID) -> ExamSession:
+    exam_session = db.get(ExamSession, session_id)
+    if exam_session is None:
+        raise ApiError(
+            status.HTTP_404_NOT_FOUND,
+            "SESSION_NOT_FOUND",
+            "Exam session was not found",
+        )
+    return exam_session
+
+
+def _active_room_or_error(db: Session, room_id: uuid.UUID) -> Room:
+    room = db.get(Room, room_id)
+    if room is None:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "ROOM_NOT_FOUND", "Room was not found")
+    if not room.is_active:
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "ROOM_INACTIVE",
+            "Inactive room cannot be selected",
+        )
+    return room
+
+
+def _validate_schedule(start: datetime | None, end: datetime | None) -> None:
+    if start is not None and end is not None and end <= start:
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "INVALID_SCHEDULE",
+            "Scheduled end must be after scheduled start",
+        )
+
+
+def _readiness(
+    db: Session,
+    exam_session: ExamSession,
+    room: Room,
+    video_asset_id: uuid.UUID | None,
+) -> SessionReadiness:
+    seat_count = db.scalar(
+        select(func.count(Seat.id)).where(
+            Seat.room_id == room.id,
+            Seat.is_active.is_(True),
+        )
+    ) or 0
+    candidate_count = db.scalar(
+        select(func.count(SessionCandidate.id)).where(
+            SessionCandidate.session_id == exam_session.id
+        )
+    ) or 0
+    return SessionReadiness(
+        room_selected=True,
+        room_active=room.is_active,
+        seat_layout_available=seat_count > 0,
+        candidates_assigned=candidate_count,
+        video_configured=video_asset_id is not None,
+        monitoring_status="NOT_STARTED",
+        can_mark_ready=(
+            room.is_active
+            and seat_count > 0
+            and candidate_count > 0
+            and video_asset_id is not None
+        ),
+    )
+
+
+def session_response(db: Session, exam_session: ExamSession) -> SessionResponse:
+    room = db.get(Room, exam_session.room_id)
+    if room is None:
+        raise ApiError(status.HTTP_409_CONFLICT, "ROOM_NOT_FOUND", "Session room was not found")
+    rows = db.execute(
+        select(SessionCandidate, Candidate, Seat)
+        .join(Candidate, Candidate.id == SessionCandidate.candidate_id)
+        .join(Seat, Seat.id == SessionCandidate.seat_id)
+        .where(SessionCandidate.session_id == exam_session.id)
+        .order_by(Seat.sort_order.nulls_last(), Seat.code)
+    ).all()
+    assignments = [
+        SessionAssignmentResponse(
+            id=assignment.id,
+            candidate=CandidateSummary(
+                id=candidate.id,
+                candidate_code=candidate.candidate_code,
+                full_name=candidate.full_name,
+                class_name=candidate.class_name,
+            ),
+            seat=SeatSummary(id=seat.id, code=seat.code, is_active=seat.is_active),
+        )
+        for assignment, candidate, seat in rows
+    ]
+    readiness = _readiness(db, exam_session, room, exam_session.video_asset_id)
+    video: MediaSummary | None = None
+    if exam_session.video_asset_id is not None:
+        asset = db.get(MediaAsset, exam_session.video_asset_id)
+        if asset is None:
+            raise ApiError(
+                status.HTTP_409_CONFLICT,
+                "MEDIA_NOT_FOUND",
+                "Session video was not found",
+            )
+        response = media_response(asset)
+        video = MediaSummary(
+            id=response.id,
+            original_filename=response.original_filename,
+            media_url=response.media_url,
+            codec=response.codec,
+            width=response.width,
+            height=response.height,
+            fps=response.fps,
+            duration_ms=response.duration_ms,
+            size_bytes=response.size_bytes,
+        )
+    return SessionResponse(
+        id=exam_session.id,
+        session_code=exam_session.session_code,
+        exam_name=exam_session.exam_name,
+        room_id=exam_session.room_id,
+        room=RoomSummary(id=room.id, code=room.code, name=room.name, is_active=room.is_active),
+        video_asset_id=exam_session.video_asset_id,
+        video=video,
+        status=ExamSessionStatus(exam_session.status),
+        scheduled_start=exam_session.scheduled_start,
+        scheduled_end=exam_session.scheduled_end,
+        runtime_profile=exam_session.runtime_profile,
+        created_by=exam_session.created_by,
+        candidate_count=readiness.candidates_assigned,
+        assignments=assignments,
+        readiness=readiness,
+        created_at=exam_session.created_at,
+        updated_at=exam_session.updated_at,
+    )
+
+
+def list_sessions(db: Session) -> list[SessionResponse]:
+    sessions = list(db.scalars(select(ExamSession).order_by(ExamSession.created_at.desc())))
+    return [session_response(db, item) for item in sessions]
+
+
+def create_session(db: Session, payload: SessionCreate, actor: User) -> SessionResponse:
+    if payload.status != ExamSessionStatus.DRAFT:
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "INVALID_SESSION_STATE",
+            "A session must be created in DRAFT state",
+        )
+    _active_room_or_error(db, payload.room_id)
+    if db.scalar(select(ExamSession.id).where(ExamSession.session_code == payload.session_code)):
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "SESSION_CODE_EXISTS",
+            "Session code already exists",
+        )
+    values = payload.model_dump()
+    values["status"] = payload.status.value
+    exam_session = ExamSession(**values, created_by=actor.id)
+    db.add(exam_session)
+    try:
+        db.flush()
+        AuditService.record(
+            db,
+            actor=actor,
+            action=AuditAction.SESSION_CREATED,
+            entity_type="EXAM_SESSION",
+            entity_id=exam_session.id,
+            metadata={
+                "session_code": exam_session.session_code,
+                "room_id": str(exam_session.room_id),
+            },
+        )
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "SESSION_CODE_EXISTS",
+            "Session code already exists",
+        ) from error
+    db.refresh(exam_session)
+    return session_response(db, exam_session)
+
+
+def update_session(
+    db: Session,
+    session_id: uuid.UUID,
+    payload: SessionUpdate,
+    actor: User,
+    settings: Settings,
+) -> SessionResponse:
+    exam_session = session_or_error(db, session_id)
+    changes = payload.model_dump(exclude_unset=True)
+    if actor.role == UserRole.SUPERVISOR.value and set(changes) != {"video_asset_id"}:
+        raise ApiError(
+            status.HTTP_403_FORBIDDEN,
+            "FORBIDDEN",
+            "Supervisors may only change the source video",
+        )
+    if "video_asset_id" in changes:
+        if exam_session.status not in {
+            ExamSessionStatus.DRAFT.value,
+            ExamSessionStatus.READY.value,
+        }:
+            raise ApiError(
+                status.HTTP_409_CONFLICT,
+                "INVALID_SESSION_STATE",
+                "Source video can only be changed in DRAFT or READY state",
+            )
+        video_asset_id = changes["video_asset_id"]
+        if video_asset_id is None and exam_session.status == ExamSessionStatus.READY.value:
+            raise ApiError(
+                status.HTTP_409_CONFLICT,
+                "SESSION_NOT_READY",
+                "A READY session must keep a valid source video",
+            )
+        if video_asset_id is not None:
+            if not isinstance(video_asset_id, uuid.UUID):
+                raise ApiError(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "MEDIA_NOT_FOUND",
+                    "Media was not found",
+                )
+            media = db.get(MediaAsset, video_asset_id)
+            if media is None:
+                raise ApiError(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "MEDIA_NOT_FOUND",
+                    "Media was not found",
+                )
+            media_response(media)
+            media_file_path(media, settings)
+    new_code = changes.get("session_code")
+    if isinstance(new_code, str) and db.scalar(
+        select(ExamSession.id).where(
+            ExamSession.session_code == new_code,
+            ExamSession.id != exam_session.id,
+        )
+    ):
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "SESSION_CODE_EXISTS",
+            "Session code already exists",
+        )
+
+    room_id = changes.get("room_id", exam_session.room_id)
+    if not isinstance(room_id, uuid.UUID):
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "ROOM_NOT_FOUND", "Room was not found")
+    room = _active_room_or_error(db, room_id)
+    if room_id != exam_session.room_id:
+        assignment_count = db.scalar(
+            select(func.count(SessionCandidate.id)).where(
+                SessionCandidate.session_id == exam_session.id
+            )
+        ) or 0
+        if assignment_count:
+            raise ApiError(
+                status.HTTP_409_CONFLICT,
+                "SESSION_HAS_ASSIGNMENTS",
+                "Clear candidate assignments before changing the room",
+            )
+
+    scheduled_start = changes.get("scheduled_start", exam_session.scheduled_start)
+    scheduled_end = changes.get("scheduled_end", exam_session.scheduled_end)
+    _validate_schedule(scheduled_start, scheduled_end)
+
+    desired_status = changes.get("status")
+    if desired_status is not None:
+        desired_status = ExamSessionStatus(desired_status)
+        current_status = ExamSessionStatus(exam_session.status)
+        if desired_status != current_status:
+            valid_transition = (
+                current_status == ExamSessionStatus.DRAFT
+                and desired_status == ExamSessionStatus.READY
+            )
+            if not valid_transition:
+                raise ApiError(
+                    status.HTTP_409_CONFLICT,
+                    "INVALID_SESSION_STATE",
+                    "Phase 2 only supports the DRAFT to READY transition",
+                )
+            readiness = _readiness(
+                db,
+                exam_session,
+                room,
+                changes.get("video_asset_id", exam_session.video_asset_id),
+            )
+            if not readiness.can_mark_ready:
+                raise ApiError(
+                    status.HTTP_409_CONFLICT,
+                    "SESSION_NOT_READY",
+                    "Room, seat layout, candidate assignments, and video are required",
+                    readiness.model_dump(),
+                )
+        changes["status"] = desired_status.value
+
+    for field, value in changes.items():
+        setattr(exam_session, field, value)
+    try:
+        db.flush()
+        AuditService.record(
+            db,
+            actor=actor,
+            action=AuditAction.SESSION_UPDATED,
+            entity_type="EXAM_SESSION",
+            entity_id=exam_session.id,
+            metadata={
+                "session_code": exam_session.session_code,
+                "changed_fields": sorted(changes),
+            },
+        )
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "SESSION_CODE_EXISTS",
+            "Session code already exists",
+        ) from error
+    db.refresh(exam_session)
+    return session_response(db, exam_session)
+
+
+def replace_assignments(
+    db: Session,
+    session_id: uuid.UUID,
+    payload: SessionCandidatesUpdate,
+    actor: User,
+) -> SessionResponse:
+    exam_session = session_or_error(db, session_id)
+    if exam_session.status not in {ExamSessionStatus.DRAFT.value, ExamSessionStatus.READY.value}:
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "INVALID_SESSION_STATE",
+            "Assignments can only be changed before monitoring starts",
+        )
+    room = _active_room_or_error(db, exam_session.room_id)
+    candidate_ids: set[uuid.UUID] = set()
+    seat_ids: set[uuid.UUID] = set()
+    validated: list[tuple[Candidate, Seat]] = []
+    for item in payload.assignments:
+        if item.candidate_id in candidate_ids:
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "CANDIDATE_ALREADY_ASSIGNED",
+                "Candidate can only be assigned once in a session",
+                {"candidate_id": str(item.candidate_id)},
+            )
+        if item.seat_id in seat_ids:
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "SEAT_ALREADY_ASSIGNED",
+                "Seat can only be assigned once in a session",
+                {"seat_id": str(item.seat_id)},
+            )
+        candidate = db.get(Candidate, item.candidate_id)
+        if candidate is None:
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "CANDIDATE_NOT_FOUND",
+                "Candidate was not found",
+                {"candidate_id": str(item.candidate_id)},
+            )
+        seat = db.get(Seat, item.seat_id)
+        if seat is None:
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "SEAT_NOT_FOUND",
+                "Seat was not found",
+                {"seat_id": str(item.seat_id)},
+            )
+        if seat.room_id != room.id:
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "SEAT_NOT_IN_SESSION_ROOM",
+                "Seat does not belong to the session room",
+                {"seat_id": str(seat.id)},
+            )
+        if not seat.is_active:
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "SEAT_INACTIVE",
+                "Inactive seat cannot be assigned",
+                {"seat_id": str(seat.id)},
+            )
+        candidate_ids.add(candidate.id)
+        seat_ids.add(seat.id)
+        validated.append((candidate, seat))
+
+    try:
+        db.execute(delete(SessionCandidate).where(SessionCandidate.session_id == exam_session.id))
+        db.add_all(
+            [
+                SessionCandidate(
+                    session_id=exam_session.id,
+                    candidate_id=candidate.id,
+                    seat_id=seat.id,
+                )
+                for candidate, seat in validated
+            ]
+        )
+        db.flush()
+        AuditService.record(
+            db,
+            actor=actor,
+            action=AuditAction.SESSION_CANDIDATES_UPDATED,
+            entity_type="EXAM_SESSION",
+            entity_id=exam_session.id,
+            metadata={
+                "session_code": exam_session.session_code,
+                "assignment_count": len(validated),
+                "candidate_codes": [candidate.candidate_code for candidate, _ in validated],
+                "seat_codes": [seat.code for _, seat in validated],
+            },
+        )
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "ASSIGNMENT_CONFLICT",
+            "Candidate assignments could not be saved",
+        ) from error
+    return session_response(db, exam_session)

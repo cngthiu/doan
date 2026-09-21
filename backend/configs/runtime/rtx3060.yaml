@@ -1,0 +1,39 @@
+profile: rtx3060
+
+runtime:
+  device: cuda:0
+  precision: fp16
+
+video:
+  realtime_analysis: true
+  source_fps: auto
+  drop_stale_analysis_frames: true
+
+analysis:
+  target_fps: 18.0
+  min_fps: 12.0
+  queue_size: 1
+
+detector:
+  backend: ultralytics
+  model: /app/models/detection/yolo11n.pt
+  sha256: 0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1
+  imgsz: 640
+  conf: 0.10
+  iou: 0.70
+  classes: [0]
+  max_det: 32
+  half: true
+
+tracker:
+  type: bytetrack
+  config: tracking/bytetrack_exam_3060.yaml
+
+websocket:
+  publish_diagnostics_hz: 2.0
+  metadata_buffer_ms: 1000
+
+ui:
+  show_tracking_confidence: false
+  interpolation: true
+  smoothing: true

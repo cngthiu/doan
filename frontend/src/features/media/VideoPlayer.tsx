@@ -1,0 +1,89 @@
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+
+export function formatVideoTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '00:00'
+  const rounded = Math.floor(seconds)
+  const hours = Math.floor(rounded / 3600)
+  const minutes = Math.floor((rounded % 3600) / 60)
+  const remaining = rounded % 60
+  const base = `${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`
+  return hours ? `${String(hours).padStart(2, '0')}:${base}` : base
+}
+
+export const VideoPlayer = forwardRef<HTMLVideoElement, { src: string; title: string }>(
+  ({ src, title }, forwardedRef) => {
+    const videoRef = useRef<HTMLVideoElement>(null)
+    const wrapperRef = useRef<HTMLDivElement>(null)
+    const [playing, setPlaying] = useState(false)
+    const [loading, setLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
+    const [currentTime, setCurrentTime] = useState(0)
+    const [duration, setDuration] = useState(0)
+    const [volume, setVolume] = useState(1)
+
+    useImperativeHandle(forwardedRef, () => videoRef.current as HTMLVideoElement)
+    useEffect(() => {
+      setPlaying(false); setLoading(true); setError(null); setCurrentTime(0); setDuration(0)
+    }, [src])
+
+    const toggle = async () => {
+      const video = videoRef.current
+      if (!video) return
+      try {
+        if (video.paused) await video.play()
+        else video.pause()
+      } catch {
+        setError('Trình duyệt không thể phát video này.')
+      }
+    }
+
+    const fullscreen = async () => {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen()
+        else await wrapperRef.current?.requestFullscreen()
+      } catch {
+        setError('Không thể mở chế độ toàn màn hình.')
+      }
+    }
+
+    return <div className="video-player" ref={wrapperRef}>
+      <div className="video-stage">
+        <video
+          ref={videoRef}
+          src={src}
+          aria-label={title}
+          preload="metadata"
+          playsInline
+          onLoadStart={() => setLoading(true)}
+          onLoadedMetadata={(event) => { setDuration(event.currentTarget.duration); setLoading(false) }}
+          onCanPlay={() => setLoading(false)}
+          onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+          onError={() => { setLoading(false); setError('Không thể tải hoặc giải mã video.') }}
+        />
+        {loading && <div className="video-state">Đang tải video…</div>}
+        {error && <div className="video-state error">{error}</div>}
+      </div>
+      <div className="video-controls">
+        <button type="button" onClick={() => void toggle()}>{playing ? 'Tạm dừng' : 'Phát'}</button>
+        <span>{formatVideoTime(currentTime)}</span>
+        <input className="video-timeline" aria-label="Vị trí video" type="range" min="0" max={duration || 0} step="0.01" value={Math.min(currentTime, duration || 0)} onChange={(event) => {
+          const time = Number(event.target.value)
+          if (videoRef.current) videoRef.current.currentTime = time
+          setCurrentTime(time)
+        }} />
+        <span>{formatVideoTime(duration)}</span>
+        <label className="volume-control">Âm lượng<input aria-label="Âm lượng" type="range" min="0" max="1" step="0.05" value={volume} onChange={(event) => {
+          const nextVolume = Number(event.target.value)
+          setVolume(nextVolume)
+          if (videoRef.current) videoRef.current.volume = nextVolume
+        }} /></label>
+        <button type="button" onClick={() => void fullscreen()}>Toàn màn hình</button>
+      </div>
+    </div>
+  },
+)
+
+VideoPlayer.displayName = 'VideoPlayer'
