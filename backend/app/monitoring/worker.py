@@ -19,6 +19,8 @@ from app.ai.domain import (
     normalize_bbox,
     suspicious_detection_overlaps,
 )
+from app.ai.seat_identity.assignment import SeatAssignmentEngine
+from app.ai.seat_identity.types import AssignmentState, SeatIdentityContext, TrackIdentity
 from app.ai.tracker.bytetrack import ByteTrackAdapter
 from app.monitoring.buffer import LatestValueBuffer
 from app.monitoring.clock import AnalysisClock
@@ -45,12 +47,15 @@ class VideoAnalysisWorker:
         tracker_factory: Callable[[Any], ByteTrackAdapter] = ByteTrackAdapter,
         decoder_factory: Callable[[Path], VideoDecoder] = VideoDecoder,
         runtime_instance_id: uuid.UUID | None = None,
+        seat_identity_context: SeatIdentityContext | None = None,
+        seat_assignment_factory: Callable[..., SeatAssignmentEngine] = SeatAssignmentEngine,
     ) -> None:
         self.session_id = session_id
         self.runtime_instance_id = runtime_instance_id or uuid.uuid4()
         self.worker_instance_id = uuid.uuid4()
         self.video_path = video_path
         self.profile = profile
+        self.seat_identity_context = seat_identity_context or SeatIdentityContext.empty(session_id)
         self.clock = AnalysisClock(start_timestamp_ms)
         self._publish = publish
         self._on_ready = on_ready
@@ -59,6 +64,7 @@ class VideoAnalysisWorker:
         self._detector_factory = detector_factory
         self._tracker_factory = tracker_factory
         self._decoder_factory = decoder_factory
+        self._seat_assignment_factory = seat_assignment_factory
         self._buffer: LatestValueBuffer[FramePacket] = LatestValueBuffer()
         self._stop = threading.Event()
         self._paused = threading.Event()
@@ -212,6 +218,10 @@ class VideoAnalysisWorker:
         try:
             detector = self._detector_factory(self.profile.detector)
             tracker = self._tracker_factory(self.profile.tracker)
+            seat_assignment = self._seat_assignment_factory(
+                self.seat_identity_context,
+                self.profile.seat_assignment,
+            )
             tracker_instance_id = getattr(tracker, "instance_id", uuid.uuid4())
             if self._stop.is_set():
                 return
@@ -230,6 +240,7 @@ class VideoAnalysisWorker:
                     last_generation = packet.generation
                 elif packet.generation != last_generation:
                     tracker.reset()
+                    seat_assignment.reset()
                     last_generation = packet.generation
                     last_tracking_timestamp_ms = None
                 if (
@@ -273,7 +284,7 @@ class VideoAnalysisWorker:
                         continue
                     self._tracking_seq += 1
                     tracking_seq = self._tracking_seq
-                tracks = tuple(
+                normalized_tracks = tuple(
                     Track(
                         track_id=item.track_id,
                         bbox_norm=normalize_bbox(
@@ -282,8 +293,24 @@ class VideoAnalysisWorker:
                             packet.source_height,
                         ),
                         confidence=item.confidence,
+                        identity=TrackIdentity(state=AssignmentState.UNASSIGNED),
                     )
                     for item in tracked
+                )
+                seat_assignment_started = time.perf_counter()
+                seat_snapshot = seat_assignment.update(
+                    normalized_tracks,
+                    packet.timestamp_ms,
+                )
+                seat_assignment_ms = (time.perf_counter() - seat_assignment_started) * 1000
+                tracks = tuple(
+                    Track(
+                        track_id=track.track_id,
+                        bbox_norm=track.bbox_norm,
+                        confidence=track.confidence,
+                        identity=seat_snapshot.identities[track.track_id],
+                    )
+                    for track in normalized_tracks
                 )
                 frame = TrackingFrame(
                     session_id=self.session_id,
@@ -296,6 +323,7 @@ class VideoAnalysisWorker:
                     source_width=packet.source_width,
                     source_height=packet.source_height,
                     tracks=tracks,
+                    seats=seat_snapshot.seats,
                 )
                 self._publish(frame.as_message())
                 self._log_tracking_debug(
@@ -333,6 +361,7 @@ class VideoAnalysisWorker:
                         detector_ms=detector_ms,
                         tracker_ms=tracker_ms,
                         pipeline_ms=pipeline_ms,
+                        seat_assignment_ms=seat_assignment_ms,
                         analysis_lag_ms=float(
                             max(0, self.clock.timestamp_ms() - packet.timestamp_ms)
                         ),
@@ -342,6 +371,14 @@ class VideoAnalysisWorker:
                         ram_used_mb=system.ram_used_mb,
                         dropped_analysis_frames=self.dropped_analysis_frames,
                         queue_size=self.queue_size,
+                        assigned_tracks=seat_snapshot.assigned_tracks,
+                        tentative_tracks=seat_snapshot.tentative_tracks,
+                        unassigned_tracks=seat_snapshot.unassigned_tracks,
+                        occupied_seats=seat_snapshot.occupied_seats,
+                        grace_seats=seat_snapshot.grace_seats,
+                        empty_seats=seat_snapshot.empty_seats,
+                        seat_switches=seat_snapshot.seat_switches,
+                        identity_recoveries=seat_snapshot.identity_recoveries,
                         profile=self.profile.profile,
                     )
                     self._publish(diagnostics.as_message())

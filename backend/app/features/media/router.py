@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Header, UploadFile, status
+from fastapi import APIRouter, File, Header, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import ApiError, error_payload
@@ -15,6 +15,7 @@ from app.features.auth.dependencies import (
 from app.features.media.schemas import MediaResponse
 from app.features.media.service import (
     create_video,
+    extract_video_frame,
     media_file_path,
     media_or_error,
     media_response,
@@ -42,6 +43,31 @@ def get_media(
     db: DatabaseSession,
 ) -> MediaResponse:
     return media_response(media_or_error(db, media_id))
+
+
+@router.get("/{media_id}/frame", response_model=None)
+def get_media_frame(
+    media_id: uuid.UUID,
+    _: MediaReader,
+    db: DatabaseSession,
+    settings: ApplicationSettings,
+    timestamp_ms: int = Query(default=5000, ge=0),
+) -> Response:
+    asset = media_or_error(db, media_id)
+    metadata = media_response(asset)
+    if timestamp_ms >= metadata.duration_ms:
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "VIDEO_FRAME_TIMESTAMP_INVALID",
+            "Calibration frame timestamp must be inside the video duration",
+            {"duration_ms": metadata.duration_ms},
+        )
+    content = extract_video_frame(media_file_path(asset, settings), timestamp_ms)
+    return Response(
+        content=content,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.get("/{media_id}/content", response_model=None)

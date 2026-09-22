@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+import cv2  # type: ignore[import-untyped]
 from fastapi import UploadFile, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -22,6 +23,7 @@ UPLOAD_CHUNK_SIZE = 1024 * 1024
 STREAM_CHUNK_SIZE = 1024 * 1024
 SUPPORTED_MP4_FORMATS = {"mp4", "mov"}
 SUPPORTED_BROWSER_CODECS = {"h264"}
+FRAME_JPEG_QUALITY = 88
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,3 +296,37 @@ def stream_file(path: Path, byte_range: ByteRange | None) -> Iterator[bytes]:
                 break
             remaining -= len(chunk)
             yield chunk
+
+
+def extract_video_frame(path: Path, timestamp_ms: int) -> bytes:
+    """Decode one reusable calibration frame; this is not a streaming endpoint."""
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "VIDEO_FRAME_UNAVAILABLE",
+                "A calibration frame could not be decoded from this video",
+            )
+        capture.set(cv2.CAP_PROP_POS_MSEC, float(timestamp_ms))
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "VIDEO_FRAME_UNAVAILABLE",
+                "A calibration frame could not be decoded from this video",
+            )
+        encoded, buffer = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_JPEG_QUALITY],
+        )
+        if not encoded:
+            raise ApiError(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "VIDEO_FRAME_ENCODING_FAILED",
+                "The calibration frame could not be encoded",
+            )
+        return bytes(buffer)
+    finally:
+        capture.release()

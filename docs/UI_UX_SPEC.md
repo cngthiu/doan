@@ -72,7 +72,9 @@ Main area:
 - playback controls
 - fullscreen
 
-Current labels: ID 01, ID 02. Later replace with seat/candidate context.
+Normal labels use stable business context, for example `B03 • SV103`. Tentative matches show
+`Đang xác định…`; unassigned people receive no candidate label. Track ID and score are visible
+only in development diagnostics.
 
 ## Side panel
 Current phase:
@@ -81,11 +83,14 @@ STATUS
 ● Running
 6 persons detected
 
-TRACKS
-ID 01 Active
-ID 02 Active
+THÍ SINH
+A01 • SV101  Đang theo dõi
+A02 • SV102  Tạm mất dấu
+
+Người chưa xác định: 1
 ```
-Later show events needing attention. Do not fabricate event data.
+Seat/identity states are operational tracking states, never suspicious-behavior labels. Later
+show events needing attention only after the event milestone. Do not fabricate event data.
 
 ## Status bar
 Compact:

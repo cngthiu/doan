@@ -119,6 +119,7 @@ class PersonDetector:
         self.config = config
         self.last_raw_detection_count = 0
         self.last_suppressed_detection_count = 0
+        self.last_raw_detections: tuple[Detection, ...] = ()
         if model is not None:
             self._model = model
             return
@@ -144,6 +145,7 @@ class PersonDetector:
     def detect(self, frame: np.ndarray) -> list[Detection]:
         self.last_raw_detection_count = 0
         self.last_suppressed_detection_count = 0
+        self.last_raw_detections = ()
         results = self._model.predict(
             source=frame,
             imgsz=self.config.imgsz,
@@ -173,6 +175,7 @@ class PersonDetector:
             if int(class_id) == 0
         ]
         self.last_raw_detection_count = len(detections)
+        self.last_raw_detections = tuple(detections)
         filtered = suppress_nested_person_detections(
             detections,
             self.config.duplicate_suppression,

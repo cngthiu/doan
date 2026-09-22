@@ -120,6 +120,22 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 )
             }
         )
+    duplicate_overrides: dict[str, float] = {}
+    if args.duplicate_preferred_confidence is not None:
+        duplicate_overrides["preferred_detection_confidence"] = args.duplicate_preferred_confidence
+    if args.duplicate_larger_min_confidence_ratio is not None:
+        duplicate_overrides["larger_box_min_confidence_ratio"] = (
+            args.duplicate_larger_min_confidence_ratio
+        )
+    if duplicate_overrides:
+        logger.warning("Explicit duplicate-suppression overrides=%s", duplicate_overrides)
+        profile.detector = profile.detector.model_copy(
+            update={
+                "duplicate_suppression": profile.detector.duplicate_suppression.model_copy(
+                    update=duplicate_overrides
+                )
+            }
+        )
     if args.new_track_thresh is not None:
         logger.warning(
             "Explicit benchmark tracker override new_track_thresh=%s",
@@ -198,7 +214,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             total_suppressed_detections += suppressed_detection_count
             peak_simultaneous_tracks = max(peak_simultaneous_tracks, len(tracks))
             suspicious_overlap_count += len(overlaps)
-            for event in tracker.drain_lifecycle_events():
+            lifecycle_events = tracker.drain_lifecycle_events()
+            for event in lifecycle_events:
                 lifecycle_counts[event.event] += 1
             for track in tracks:
                 lifetime = track_lifetimes.setdefault(
@@ -214,6 +231,17 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "detection_count": len(detections),
                     "raw_detection_count": raw_detection_count,
                     "suppressed_detection_count": suppressed_detection_count,
+                    "raw_detection_boxes": json.dumps(
+                        [
+                            {
+                                "bbox": [round(value, 2) for value in detection.bbox_xyxy],
+                                "confidence": round(detection.confidence, 4),
+                                "class_id": detection.class_id,
+                            }
+                            for detection in detector.last_raw_detections
+                        ],
+                        separators=(",", ":"),
+                    ),
                     "active_track_count": len(tracks),
                     "track_ids": " ".join(str(track.track_id) for track in tracks),
                     "track_boxes": json.dumps(
@@ -239,6 +267,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         separators=(",", ":"),
                     ),
                     "suspicious_overlaps": json.dumps(overlaps, separators=(",", ":")),
+                    "track_events": json.dumps(
+                        [
+                            {"event": event.event, "track_id": event.track_id}
+                            for event in lifecycle_events
+                        ],
+                        separators=(",", ":"),
+                    ),
                     "detector_ms": round(detector_ms, 4),
                     "tracker_ms": round(tracker_ms, 4),
                     "pipeline_ms": round(pipeline_ms, 4),
@@ -289,6 +324,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "number_of_raw_detections": total_raw_detections,
         "number_of_suppressed_detections": total_suppressed_detections,
         "number_of_created_tracks": lifecycle_counts["TRACK_CREATED"],
+        "excess_track_creations_over_peak": max(
+            0,
+            lifecycle_counts["TRACK_CREATED"] - peak_simultaneous_tracks,
+        ),
         "peak_simultaneous_tracks": peak_simultaneous_tracks,
         "track_lifetime_ms": {
             "minimum": min(lifetimes_ms, default=None),
@@ -381,6 +420,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable nested-box suppression for an A/B benchmark",
     )
+    parser.add_argument(
+        "--duplicate-preferred-confidence",
+        type=float,
+        help="A/B override for the confidence that protects a stronger partial box",
+    )
+    parser.add_argument(
+        "--duplicate-larger-min-confidence-ratio",
+        type=float,
+        help="A/B override for the minimum large/full-box confidence ratio",
+    )
     parser.add_argument("--new-track-thresh", type=float, help="Single-variable ByteTrack ablation")
     parser.add_argument(
         "--match-thresh",
@@ -416,6 +465,16 @@ def main() -> None:
         raise SystemExit("--new-track-thresh must be between 0 and 1")
     if args.detector_iou is not None and not 0 <= args.detector_iou <= 1:
         raise SystemExit("--detector-iou must be between 0 and 1")
+    if (
+        args.duplicate_preferred_confidence is not None
+        and not 0 < args.duplicate_preferred_confidence <= 1
+    ):
+        raise SystemExit("--duplicate-preferred-confidence must be between 0 and 1")
+    if (
+        args.duplicate_larger_min_confidence_ratio is not None
+        and not 0 < args.duplicate_larger_min_confidence_ratio <= 1
+    ):
+        raise SystemExit("--duplicate-larger-min-confidence-ratio must be between 0 and 1")
     if args.match_thresh is not None and not 0 <= args.match_thresh <= 1:
         raise SystemExit("--match-thresh must be between 0 and 1")
     if args.track_low_thresh is not None and not 0 <= args.track_low_thresh <= 1:

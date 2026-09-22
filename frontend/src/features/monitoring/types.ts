@@ -1,9 +1,28 @@
 export type RuntimeState = 'INACTIVE' | 'INITIALIZING' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'ERROR'
+export type AssignmentState = 'UNASSIGNED' | 'TENTATIVE' | 'ASSIGNED'
+export type SeatOccupancyState = 'EMPTY' | 'OCCUPIED' | 'GRACE'
+
+export interface TrackIdentity {
+  state: AssignmentState
+  seat_id: string | null
+  seat_code: string | null
+  session_candidate_id: string | null
+  score: number | null
+}
 
 export interface TrackingTrack {
   track_id: number
   bbox_norm: [number, number, number, number]
   confidence: number
+  identity: TrackIdentity
+}
+
+export interface SeatRuntime {
+  seat_id: string
+  seat_code: string
+  session_candidate_id: string | null
+  state: SeatOccupancyState
+  track_id: number | null
 }
 
 export interface TrackingFrame {
@@ -18,6 +37,7 @@ export interface TrackingFrame {
   source_width: number
   source_height: number
   tracks: TrackingTrack[]
+  seats: SeatRuntime[]
 }
 
 export interface RuntimeDiagnostics {
@@ -38,6 +58,7 @@ export interface RuntimeDiagnostics {
   detector_ms: number | null
   tracker_ms: number | null
   pipeline_ms: number | null
+  seat_assignment_ms: number | null
   analysis_lag_ms: number
   gpu_util_pct: number | null
   vram_used_mb: number | null
@@ -45,6 +66,14 @@ export interface RuntimeDiagnostics {
   ram_used_mb: number | null
   dropped_analysis_frames: number
   queue_size: number
+  assigned_tracks: number
+  tentative_tracks: number
+  unassigned_tracks: number
+  occupied_seats: number
+  grace_seats: number
+  empty_seats: number
+  seat_switches: number
+  identity_recoveries: number
   profile: string
 }
 

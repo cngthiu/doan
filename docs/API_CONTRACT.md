@@ -53,12 +53,15 @@ GET   /api/v1/candidates/{candidate_id}/events
 POST /api/v1/media/videos
 GET  /api/v1/media/{media_id}
 GET  /api/v1/media/{media_id}/content
+GET  /api/v1/media/{media_id}/frame?timestamp_ms=5000
 ```
 Upload response should include filename, media URL, width, height, FPS, duration, codec and size. Media endpoint should support browser seeking/range requests when feasible.
+The frame endpoint returns one authenticated `image/jpeg` reference frame for seat calibration;
+it is not a realtime stream.
 
 ## Sessions
 ```text
-GET   /api/v1/sessions?page=1&page_size=20&q=...&status=READY
+GET   /api/v1/sessions?page=1&page_size=20&q=...&status=READY&room_id=uuid
 POST  /api/v1/sessions
 GET   /api/v1/sessions/{session_id}
 PATCH /api/v1/sessions/{session_id}
@@ -99,16 +102,34 @@ Tracking message:
   "frame_id": 1331,
   "source_width": 1920,
   "source_height": 1080,
-  "tracks": [
-    {"track_id": 17, "bbox_norm": [0.214,0.182,0.326,0.784], "confidence": 0.91}
-  ]
+  "tracks": [{
+    "track_id": 17,
+    "bbox_norm": [0.214,0.182,0.326,0.784],
+    "confidence": 0.91,
+    "identity": {
+      "state": "ASSIGNED",
+      "seat_id": "uuid",
+      "seat_code": "B03",
+      "session_candidate_id": "uuid",
+      "score": 0.82
+    }
+  }],
+  "seats": [{
+    "seat_id": "uuid",
+    "seat_code": "B03",
+    "session_candidate_id": "uuid",
+    "state": "OCCUPIED",
+    "track_id": 17
+  }]
 }
 ```
 Clients accept only increasing `tracking_seq` values for the active runtime instance/generation.
 Seek increments the runtime generation; runtime restart changes the runtime instance identifier.
-Tracking payloads contain tracked objects only. Raw detections are available only in development
-logs and benchmark CSV output.
-Diagnostics message includes analysis_fps, detector_ms, tracker_ms, pipeline_ms, gpu_util_pct, vram_used_mb, cpu_util_pct, ram_used_mb and dropped_analysis_frames.
+Tracking payloads do not include full Candidate objects. The frontend joins
+`session_candidate_id` with the ordinary session REST response. Raw detections are available
+only in development logs and benchmark CSV output.
+Diagnostics additionally include seat assignment latency, assigned/tentative/unassigned track
+counts, occupied/grace/empty seat counts, seat switches, and identity recoveries.
 
 ## Manual events
 ```text

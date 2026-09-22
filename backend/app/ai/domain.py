@@ -4,6 +4,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from app.ai.seat_identity.types import SeatRuntimeSnapshot, TrackIdentity
+
 
 @dataclass(frozen=True, slots=True)
 class Detection:
@@ -24,6 +26,7 @@ class Track:
     track_id: int
     bbox_norm: tuple[float, float, float, float]
     confidence: float
+    identity: TrackIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +41,7 @@ class TrackingFrame:
     source_width: int
     source_height: int
     tracks: tuple[Track, ...]
+    seats: tuple[SeatRuntimeSnapshot, ...]
 
     def as_message(self) -> dict[str, Any]:
         return {
@@ -51,7 +55,39 @@ class TrackingFrame:
             "frame_id": self.frame_id,
             "source_width": self.source_width,
             "source_height": self.source_height,
-            "tracks": [asdict(track) for track in self.tracks],
+            "tracks": [
+                {
+                    "track_id": track.track_id,
+                    "bbox_norm": track.bbox_norm,
+                    "confidence": track.confidence,
+                    "identity": {
+                        "state": track.identity.state.value,
+                        "seat_id": (
+                            str(track.identity.seat_id) if track.identity.seat_id else None
+                        ),
+                        "seat_code": track.identity.seat_code,
+                        "session_candidate_id": (
+                            str(track.identity.session_candidate_id)
+                            if track.identity.session_candidate_id
+                            else None
+                        ),
+                        "score": track.identity.score,
+                    },
+                }
+                for track in self.tracks
+            ],
+            "seats": [
+                {
+                    "seat_id": str(seat.seat_id),
+                    "seat_code": seat.seat_code,
+                    "session_candidate_id": (
+                        str(seat.session_candidate_id) if seat.session_candidate_id else None
+                    ),
+                    "state": seat.state.value,
+                    "track_id": seat.track_id,
+                }
+                for seat in self.seats
+            ],
         }
 
 
@@ -73,6 +109,7 @@ class RuntimeDiagnostics:
     detector_ms: float | None
     tracker_ms: float | None
     pipeline_ms: float | None
+    seat_assignment_ms: float | None
     analysis_lag_ms: float
     gpu_util_pct: float | None
     vram_used_mb: float | None
@@ -80,6 +117,14 @@ class RuntimeDiagnostics:
     ram_used_mb: float | None
     dropped_analysis_frames: int
     queue_size: int
+    assigned_tracks: int
+    tentative_tracks: int
+    unassigned_tracks: int
+    occupied_seats: int
+    grace_seats: int
+    empty_seats: int
+    seat_switches: int
+    identity_recoveries: int
     profile: str
 
     def as_message(self) -> dict[str, Any]:

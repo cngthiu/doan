@@ -59,6 +59,24 @@ class DiagnosticsConfig(BaseModel):
     publish_hz: float = Field(gt=0, le=10)
 
 
+class SeatAssignmentConfig(BaseModel):
+    enabled: bool = True
+    overlap_weight: float = Field(default=0.70, ge=0)
+    distance_weight: float = Field(default=0.30, ge=0)
+    min_score: float = Field(default=0.35, ge=0, le=1)
+    seat_expand_ratio: float = Field(default=0.08, ge=0)
+    confirm_ms: int = Field(default=600, ge=0)
+    release_ms: int = Field(default=1500, ge=0)
+    switch_margin: float = Field(default=0.15, ge=0)
+    switch_confirm_ms: int = Field(default=800, ge=0)
+
+    @model_validator(mode="after")
+    def positive_weight_sum(self) -> SeatAssignmentConfig:
+        if self.overlap_weight + self.distance_weight <= 0:
+            raise ValueError("seat-assignment weights must have a positive sum")
+        return self
+
+
 class TrackingDebugConfig(BaseModel):
     enabled: bool = False
     log_every_n_frames: int = Field(default=10, gt=0)
@@ -78,6 +96,7 @@ class RuntimeProfile(BaseModel):
     detector: DetectorConfig
     tracker: ByteTrackConfig
     diagnostics: DiagnosticsConfig
+    seat_assignment: SeatAssignmentConfig = Field(default_factory=SeatAssignmentConfig)
     tracking_debug: TrackingDebugConfig = Field(default_factory=TrackingDebugConfig)
     ui: TrackingUiConfig = Field(default_factory=TrackingUiConfig)
 
@@ -140,6 +159,7 @@ def load_runtime_profile_from_paths(
         detector=DetectorConfig.model_validate(detector_payload),
         tracker=ByteTrackConfig.model_validate(_yaml_mapping(tracker_path)),
         diagnostics=DiagnosticsConfig.model_validate(payload.get("diagnostics")),
+        seat_assignment=SeatAssignmentConfig.model_validate(payload.get("seat_assignment") or {}),
         tracking_debug=TrackingDebugConfig.model_validate(payload.get("tracking_debug") or {}),
         ui=TrackingUiConfig.model_validate(payload.get("ui") or {}),
     )

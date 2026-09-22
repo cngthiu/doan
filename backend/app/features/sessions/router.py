@@ -35,10 +35,18 @@ def get_sessions(
     db: DatabaseSession,
     q: str | None = Query(default=None, max_length=255),
     session_status: Annotated[ExamSessionStatus | None, Query(alias="status")] = None,
+    room_id: Annotated[uuid.UUID | None, Query()] = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> Page[SessionResponse]:
-    sessions, total = list_sessions(db, q, session_status, page, page_size)
+    sessions, total = list_sessions(
+        db,
+        query=q,
+        session_status=session_status,
+        page=page,
+        page_size=page_size,
+        room_id=room_id,
+    )
     return Page(items=sessions, page=page, page_size=page_size, total=total)
 
 

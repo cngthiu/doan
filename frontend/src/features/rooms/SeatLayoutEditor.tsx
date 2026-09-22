@@ -7,6 +7,7 @@ import { ErrorState } from '../../shared/components/ErrorState'
 import { useToast } from '../../shared/components/ToastProvider'
 import { useUnsavedChanges } from '../../shared/hooks/useUnsavedChanges'
 import { valuesChanged } from '../../shared/validation'
+import { getMediaFrame } from '../media/api'
 import { saveSeats } from './api'
 import type { Seat } from './types'
 
@@ -25,11 +26,15 @@ function copySeats(seats: Seat[]): Seat[] {
 export function SeatLayoutEditor({
   roomId,
   initialSeats,
+  referenceMediaId,
+  referenceTimestampMs,
   editable,
   onSaved,
 }: {
   roomId: string
   initialSeats: Seat[]
+  referenceMediaId: string | null
+  referenceTimestampMs: number
   editable: boolean
   onSaved(seats: Seat[]): void
 }) {
@@ -38,12 +43,47 @@ export function SeatLayoutEditor({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [removeIndex, setRemoveIndex] = useState<number | null>(null)
+  const [referenceUrl, setReferenceUrl] = useState<string | null>(null)
+  const [referenceKind, setReferenceKind] = useState<'image' | 'video' | null>(null)
   const areaRef = useRef<HTMLDivElement>(null)
   const toast = useToast()
   const dirty = valuesChanged(seats, initialSeats)
   useUnsavedChanges(dirty)
 
   useEffect(() => setSeats(copySeats(initialSeats)), [initialSeats])
+
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancelled = false
+    if (!referenceMediaId) {
+      setReferenceUrl(null)
+      setReferenceKind(null)
+      return undefined
+    }
+    void getMediaFrame(referenceMediaId, referenceTimestampMs).then((blob) => {
+      if (cancelled) return
+      objectUrl = URL.createObjectURL(blob)
+      setReferenceUrl(objectUrl)
+      setReferenceKind('image')
+    }).catch(() => {
+      if (!cancelled) setReferenceUrl(null)
+    })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [referenceMediaId, referenceTimestampMs])
+
+  useEffect(() => () => {
+    if (referenceUrl) URL.revokeObjectURL(referenceUrl)
+  }, [referenceUrl])
+
+  const chooseLocalReference = (file: File | undefined) => {
+    if (!file) return
+    if (referenceUrl) URL.revokeObjectURL(referenceUrl)
+    setReferenceUrl(URL.createObjectURL(file))
+    setReferenceKind('video')
+  }
 
   useEffect(() => {
     if (!drag) return
@@ -144,10 +184,20 @@ export function SeatLayoutEditor({
           <h2>Bố trí chỗ ngồi</h2>
           <p>Tọa độ được lưu theo tỷ lệ chuẩn hóa, không phụ thuộc kích thước màn hình.</p>
         </div>
-        {editable && <button className="secondary-button" type="button" onClick={addSeat}>Thêm chỗ ngồi</button>}
+        {editable && <button className="secondary-button" type="button" onClick={addSeat} disabled={!referenceUrl}>Thêm chỗ ngồi</button>}
       </div>
       {error && <ErrorState message={error} />}
+      <div className="calibration-toolbar">
+        <span>{referenceUrl ? 'Đang hiệu chỉnh trên hình ảnh camera thực.' : 'Chọn video tham chiếu trước khi hiệu chỉnh vị trí ghế.'}</span>
+        <label className="secondary-button calibration-file-button">
+          Chọn video tham chiếu
+          <input type="file" accept="video/mp4,video/*" onChange={(event) => chooseLocalReference(event.target.files?.[0])} />
+        </label>
+      </div>
       <div className="calibration-area" ref={areaRef} aria-label="Vùng hiệu chỉnh chỗ ngồi">
+        {referenceUrl && referenceKind === 'image' && <img className="calibration-reference" src={referenceUrl} alt="Khung hình camera dùng để hiệu chỉnh ghế" />}
+        {referenceUrl && referenceKind === 'video' && <video className="calibration-reference" src={referenceUrl} controls muted />}
+        {!referenceUrl && <span className="calibration-placeholder">Chưa có khung hình camera tham chiếu</span>}
         <span className="calibration-label">Khung hình hiệu chỉnh</span>
         {seats.map((seat, index) => (
           <div
@@ -159,7 +209,7 @@ export function SeatLayoutEditor({
               width: `${seat.width * 100}%`,
               height: `${seat.height * 100}%`,
             }}
-            onPointerDown={(event) => startDrag(event, index, 'move')}
+            onPointerDown={(event) => referenceUrl && startDrag(event, index, 'move')}
           >
             <strong>{seat.code}</strong>
             {editable && (
@@ -167,7 +217,7 @@ export function SeatLayoutEditor({
                 aria-label={`Đổi kích thước chỗ ngồi ${seat.code}`}
                 className="resize-handle"
                 type="button"
-                onPointerDown={(event) => startDrag(event, index, 'resize')}
+                onPointerDown={(event) => referenceUrl && startDrag(event, index, 'resize')}
               />
             )}
           </div>

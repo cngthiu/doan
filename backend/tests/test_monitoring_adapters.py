@@ -67,6 +67,7 @@ def test_yolo_adapter_filters_person_and_passes_exact_configuration(tmp_path: Pa
     detector = PersonDetector(detector_config(tmp_path / "unused.pt"), model=fake)
     detections = detector.detect(np.zeros((100, 100, 3), dtype=np.uint8))
     assert detections == [Detection((10.0, 20.0, 50.0, 90.0), pytest.approx(0.91), 0)]
+    assert detector.last_raw_detections == tuple(detections)
     assert fake.arguments["classes"] == [0]
     assert fake.arguments["imgsz"] == 640
     assert fake.arguments["quantize"] == 16
@@ -170,6 +171,15 @@ def test_runtime_profiles_match_phase_four_contract() -> None:
     assert gtx.detector.duplicate_suppression.enabled is True
     assert gtx.detector.duplicate_suppression.containment_threshold == 0.90
     assert gtx.detector.duplicate_suppression.preferred_detection_confidence == 0.25
+    assert gtx.seat_assignment.enabled is True
+    assert gtx.seat_assignment.overlap_weight == 0.70
+    assert gtx.seat_assignment.distance_weight == 0.30
+    assert gtx.seat_assignment.min_score == 0.35
+    assert gtx.seat_assignment.seat_expand_ratio == 0.08
+    assert gtx.seat_assignment.confirm_ms == 600
+    assert gtx.seat_assignment.release_ms == 1500
+    assert gtx.seat_assignment.switch_margin == 0.15
+    assert gtx.seat_assignment.switch_confirm_ms == 800
     assert gtx.tracking_debug.enabled is False
     assert gtx.ui.tracking_interpolation is False
     assert gtx.ui.tracking_smoothing is False

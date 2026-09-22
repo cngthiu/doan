@@ -2,12 +2,35 @@ import { useEffect, useRef, type RefObject } from 'react'
 
 import { containedVideoRect, mapNormalizedBox } from './geometry'
 import { TrackingBuffer } from './trackingBuffer'
+import type { TrackingTrack } from './types'
 
 interface TrackingCanvasProps {
   videoRef: RefObject<HTMLVideoElement | null>
   buffer: TrackingBuffer
   revision: number
   showConfidence?: boolean
+  candidateCodes: ReadonlyMap<string, string>
+  debug?: boolean
+}
+
+export function trackingLabel(
+  track: TrackingTrack,
+  candidateCodes: ReadonlyMap<string, string>,
+  debug = false,
+): string[] {
+  const labels: string[] = []
+  if (track.identity.state === 'ASSIGNED' && track.identity.seat_code) {
+    const candidateCode = track.identity.session_candidate_id
+      ? candidateCodes.get(track.identity.session_candidate_id)
+      : undefined
+    labels.push(candidateCode ? `${track.identity.seat_code} • ${candidateCode}` : track.identity.seat_code)
+  } else if (track.identity.state === 'TENTATIVE') {
+    labels.push('Đang xác định…')
+  }
+  if (debug) {
+    labels.push(`T${track.track_id}${track.identity.score == null ? '' : ` • score=${track.identity.score.toFixed(2)}`}`)
+  }
+  return labels
 }
 
 interface ClearableCanvasContext {
@@ -49,7 +72,7 @@ export function startTrackingRenderLoop(
   }
 }
 
-export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = false }: TrackingCanvasProps) {
+export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = false, candidateCodes, debug = false }: TrackingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -82,13 +105,16 @@ export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = fa
       for (const track of frame.tracks) {
         const [x1, y1, x2, y2] = mapNormalizedBox(track.bbox_norm, content)
         context.strokeRect(x1, y1, x2 - x1, y2 - y1)
-        const label = `ID ${String(track.track_id).padStart(2, '0')}${showConfidence ? ` • ${track.confidence.toFixed(2)}` : ''}`
-        const labelWidth = context.measureText(label).width + 12
-        const labelY = Math.max(0, y1 - 22)
-        context.fillStyle = '#0891b2'
-        context.fillRect(x1, labelY, labelWidth, 22)
-        context.fillStyle = '#ecfeff'
-        context.fillText(label, x1 + 6, labelY + 15)
+        const labels = trackingLabel(track, candidateCodes, debug)
+        if (showConfidence && labels.length) labels[labels.length - 1] += ` • conf=${track.confidence.toFixed(2)}`
+        labels.forEach((label, index) => {
+          const labelWidth = context.measureText(label).width + 12
+          const labelY = Math.max(0, y1 - (labels.length - index) * 22)
+          context.fillStyle = index === 0 ? '#0891b2' : '#334155'
+          context.fillRect(x1, labelY, labelWidth, 22)
+          context.fillStyle = '#ecfeff'
+          context.fillText(label, x1 + 6, labelY + 15)
+        })
       }
     }
 
@@ -113,7 +139,7 @@ export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = fa
       const context = canvas.getContext('2d')
       if (context) clearCanvasBackingStore(context, canvas)
     }
-  }, [buffer, showConfidence, videoRef])
+  }, [buffer, candidateCodes, debug, showConfidence, videoRef])
 
   useEffect(() => {
     const canvas = canvasRef.current

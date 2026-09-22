@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { apiContentErrorMessage, apiErrorMessage } from '../../shared/api/errors'
@@ -29,7 +29,7 @@ import {
 } from './api'
 import { TrackingCanvas } from './TrackingCanvas'
 import { isTrackingTimestampAligned, TrackingBuffer } from './trackingBuffer'
-import type { MonitoringMessage, MonitoringStatus, RuntimeDiagnostics, TrackingTrack } from './types'
+import type { MonitoringMessage, MonitoringStatus, RuntimeDiagnostics, SeatRuntime, TrackingTrack } from './types'
 import { useMonitoringSocket } from './useMonitoringSocket'
 
 const inactiveStatus: MonitoringStatus = {
@@ -59,6 +59,7 @@ export function MonitoringPage() {
   const [runtime, setRuntime] = useState<MonitoringStatus>(inactiveStatus)
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null)
   const [activeTracks, setActiveTracks] = useState<TrackingTrack[]>([])
+  const [activeSeats, setActiveSeats] = useState<SeatRuntime[]>([])
   const [synchronizing, setSynchronizing] = useState(false)
   const [overlayRevision, setOverlayRevision] = useState(0)
   const [confirmStop, setConfirmStop] = useState(false)
@@ -69,6 +70,11 @@ export function MonitoringPage() {
   const suppressVideoEvents = useRef(false)
   const selected = sessions.find((item) => item.id === selectedId) ?? null
   const runtimeActive = ['INITIALIZING', 'RUNNING', 'PAUSED'].includes(runtime.state)
+  const candidateCodes = useMemo(() => new Map(
+    (selected?.assignments ?? []).map((assignment) => [assignment.id, assignment.candidate.candidate_code]),
+  ), [selected])
+  const debugOverlay = import.meta.env.DEV && can(permissions.diagnosticsRead)
+  const unidentifiedCount = activeTracks.filter((track) => track.identity.state === 'UNASSIGNED').length
 
   const loadSessions = useCallback((search: string) => {
     setLoading(true)
@@ -81,7 +87,7 @@ export function MonitoringPage() {
   useEffect(() => { loadSessions(debouncedSessionQuery) }, [debouncedSessionQuery, loadSessions])
 
   useEffect(() => {
-    trackingBuffer.current.reset(); setActiveTracks([]); setDiagnostics(null); setSynchronizing(false); synchronizingRef.current = false
+    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setDiagnostics(null); setSynchronizing(false); synchronizingRef.current = false
     setOverlayRevision((value) => value + 1)
     if (!selectedId) { setRuntime(inactiveStatus); return }
     getMonitoringStatus(selectedId)
@@ -100,7 +106,7 @@ export function MonitoringPage() {
       const inserted = trackingBuffer.current.insert(message)
       if (!inserted.accepted) return
       if (inserted.reset) {
-        setActiveTracks([])
+        setActiveTracks([]); setActiveSeats([])
         setOverlayRevision((value) => value + 1)
       }
       synchronizingRef.current = false
@@ -109,16 +115,17 @@ export function MonitoringPage() {
       if (now - lastTrackUiUpdate.current >= 250) {
         lastTrackUiUpdate.current = now
         setActiveTracks(message.tracks)
+        setActiveSeats(message.seats)
       }
     } else if (message.type === 'diagnostics') {
       const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
       if (!active.accepted) return
-      if (active.reset) { setActiveTracks([]); setOverlayRevision((value) => value + 1) }
+      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setOverlayRevision((value) => value + 1) }
       setDiagnostics(message)
     } else {
       const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
       if (!active.accepted) return
-      if (active.reset) { setActiveTracks([]); setOverlayRevision((value) => value + 1) }
+      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setOverlayRevision((value) => value + 1) }
       setRuntime((current) => ({ ...current, state: message.state, error: message.error }))
       synchronizingRef.current = message.synchronizing
       setSynchronizing(message.synchronizing)
@@ -127,6 +134,7 @@ export function MonitoringPage() {
         synchronizingRef.current = false
         setSynchronizing(false)
         setActiveTracks([])
+        setActiveSeats([])
         setOverlayRevision((value) => value + 1)
         setError('Không thể khởi tạo hoặc duy trì AI.')
         setErrorDetail(message.error)
@@ -174,7 +182,7 @@ export function MonitoringPage() {
       setError('Trình duyệt không thể bắt đầu phát video.')
       return
     }
-    trackingBuffer.current.reset(); setActiveTracks([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
     const status = await perform(() => startMonitoring(selected.id, timestampMs))
     if (!status) {
       video.pause()
@@ -182,6 +190,7 @@ export function MonitoringPage() {
       synchronizingRef.current = false
       setSynchronizing(false)
       setActiveTracks([])
+      setActiveSeats([])
       setOverlayRevision((value) => value + 1)
     }
   }
@@ -200,20 +209,20 @@ export function MonitoringPage() {
 
   const onVideoSeeked = (video: HTMLVideoElement) => {
     if (!runtimeActive || !canOperate) return
-    trackingBuffer.current.clearFrames(); setActiveTracks([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
     void perform(() => seekMonitoring(selectedId, Math.round(video.currentTime * 1000)))
   }
 
   const onVideoSeeking = () => {
     if (!runtimeActive || !canOperate) return
-    trackingBuffer.current.clearFrames(); setActiveTracks([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
   }
 
   const stop = async () => {
     suppressVideoEvents.current = true
     videoRef.current?.pause()
     const status = await perform(() => stopMonitoring(selectedId))
-    trackingBuffer.current.reset(); setActiveTracks([]); setSynchronizing(false); synchronizingRef.current = false; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(false); synchronizingRef.current = false; setOverlayRevision((value) => value + 1)
     if (status) setSessions((items) => items.map((item) => item.id === selectedId ? { ...item, status: 'COMPLETED' } : item))
     window.setTimeout(() => { suppressVideoEvents.current = false }, 0)
   }
@@ -232,13 +241,18 @@ export function MonitoringPage() {
       <section className="monitoring-live-grid">
         <div className="card monitoring-video-card">
           <div className="media-summary"><strong>{selected.video.original_filename}</strong><span>{formatResolution(selected.video.width, selected.video.height)} · {formatFps(selected.video.fps, 2)} · 1.0×</span></div>
-          <VideoMonitor ref={videoRef} mediaUrl={selected.video.media_url} title={selected.video.original_filename} overlay={<><TrackingCanvas videoRef={videoRef} buffer={trackingBuffer.current} revision={overlayRevision} />{synchronizing && <div className="sync-indicator">Đang đồng bộ AI…</div>}</>} onPause={onVideoPause} onPlay={onVideoPlay} onSeeking={onVideoSeeking} onSeeked={onVideoSeeked} onEnded={() => { if (runtimeActive && canOperate) void stop() }} />
+          <VideoMonitor ref={videoRef} mediaUrl={selected.video.media_url} title={selected.video.original_filename} overlay={<><TrackingCanvas videoRef={videoRef} buffer={trackingBuffer.current} revision={overlayRevision} candidateCodes={candidateCodes} debug={debugOverlay} showConfidence={debugOverlay} />{synchronizing && <div className="sync-indicator">Đang đồng bộ AI…</div>}</>} onPause={onVideoPause} onPlay={onVideoPlay} onSeeking={onVideoSeeking} onSeeked={onVideoSeeked} onEnded={() => { if (runtimeActive && canOperate) void stop() }} />
           <div className="monitoring-actions">{runtime.state === 'INACTIVE' && canOperate && <button className="primary-button" disabled={selected.status !== 'READY'} type="button" onClick={() => void start()}>Bắt đầu giám sát</button>}{runtime.state === 'INITIALIZING' && <button className="primary-button" disabled type="button">Đang khởi tạo AI…</button>}{runtime.state === 'RUNNING' && canOperate && <button className="secondary-button" type="button" onClick={() => videoRef.current?.pause()}>Tạm dừng</button>}{runtime.state === 'PAUSED' && canOperate && <button className="primary-button" type="button" onClick={() => void videoRef.current?.play()}>Tiếp tục</button>}{runtimeActive && canOperate && <button className="danger-button subtle" type="button" onClick={() => setConfirmStop(true)}>Kết thúc</button>}{selected.status !== 'READY' && runtime.state === 'INACTIVE' && <span className="secondary-text">Phiên thi cần ở trạng thái Sẵn sàng trước khi bắt đầu.</span>}</div>
         </div>
-        <aside className="card monitoring-side-panel"><p className="panel-label">TRẠNG THÁI</p><div className={`runtime-state ${runtime.state.toLowerCase()}`}><span />{runtimeStateLabels[runtime.state]}</div><strong className="person-count">{activeTracks.length} người</strong><p className="panel-label">ĐỐI TƯỢNG THEO DÕI</p><div className="track-list">{activeTracks.length ? activeTracks.map((track) => <div key={track.track_id}><strong>ID {String(track.track_id).padStart(2, '0')}</strong><span>Đang theo dõi</span></div>) : <p className="secondary-text">Chưa phát hiện người đang theo dõi.</p>}</div></aside>
+        <aside className="card monitoring-side-panel"><p className="panel-label">TRẠNG THÁI</p><div className={`runtime-state ${runtime.state.toLowerCase()}`}><span />{runtimeStateLabels[runtime.state]}</div><strong className="person-count">{activeTracks.length} người</strong><p className="panel-label">THÍ SINH</p><p className="track-identity-note">Nhận dạng ổn định theo chỗ ngồi đã phân công trong phiên thi.</p><div className="track-list">{selected.assignments.length ? selected.assignments.map((assignment) => {
+          const seatRuntime = activeSeats.find((seat) => seat.seat_id === assignment.seat.id)
+          const tentative = activeTracks.some((track) => track.identity.state === 'TENTATIVE' && track.identity.seat_id === assignment.seat.id)
+          const status = tentative ? 'Đang xác định' : seatRuntime?.state === 'OCCUPIED' ? 'Đang theo dõi' : seatRuntime?.state === 'GRACE' ? 'Tạm mất dấu' : seatRuntime ? 'Ghế trống' : 'Chưa theo dõi'
+          return <div key={assignment.id}><strong>{assignment.seat.code} • {assignment.candidate.candidate_code}</strong><span>{status}</span></div>
+        }) : <p className="secondary-text">Chưa phân công thí sinh vào chỗ ngồi.</p>}</div>{unidentifiedCount > 0 && <p className="unidentified-count">Người chưa xác định: <strong>{unidentifiedCount}</strong></p>}</aside>
       </section>
       <div className="monitoring-status-bar"><span className={socketConnected && runtime.state === 'RUNNING' ? 'online' : ''}>● {socketConnected ? 'AI trực tuyến' : 'AI ngoại tuyến'}</span><span>Video {formatFps(selected.video.fps)}</span><span>AI {metric(diagnostics?.analysis_fps, ' FPS')}</span><PermissionGate permission={permissions.diagnosticsRead}><><span>Độ trễ {metric(diagnostics?.pipeline_ms, ' ms')}</span><span>Sai lệch {metric(diagnostics?.analysis_lag_ms, ' ms')}</span></></PermissionGate></div>
-      {import.meta.env.DEV && can(permissions.diagnosticsRead) && <details className="card diagnostics-drawer"><summary>Chẩn đoán runtime</summary><div className="diagnostics-grid"><span>Runtime ID <strong>{diagnostics?.runtime_instance_id ?? runtime.runtime_instance_id ?? '—'}</strong></span><span>Generation <strong>{diagnostics?.runtime_generation ?? runtime.runtime_generation ?? '—'}</strong></span><span>Worker ID <strong>{diagnostics?.worker_instance_id ?? runtime.worker_instance_id ?? '—'}</strong></span><span>Tracker ID <strong>{diagnostics?.tracker_instance_id ?? runtime.tracker_instance_id ?? '—'}</strong></span><span>Tracking seq <strong>{diagnostics?.tracking_seq ?? runtime.tracking_seq}</strong></span><span>Latest AI timestamp <strong>{diagnostics ? `${diagnostics.latest_timestamp_ms} ms` : '—'}</strong></span><span>Raw detections <strong>{diagnostics?.raw_detection_count ?? '—'}</strong></span><span>Active tracks <strong>{diagnostics?.active_track_count ?? '—'}</strong></span><span>Source FPS <strong>{metric(diagnostics?.source_fps)}</strong></span><span>Analysis FPS <strong>{metric(diagnostics?.analysis_fps)}</strong></span><span>Target FPS <strong>{metric(diagnostics?.target_analysis_fps)}</strong></span><span>Detector <strong>{metric(diagnostics?.detector_ms, ' ms')}</strong></span><span>Tracker <strong>{metric(diagnostics?.tracker_ms, ' ms')}</strong></span><span>Pipeline <strong>{metric(diagnostics?.pipeline_ms, ' ms')}</strong></span><span>Analysis lag <strong>{metric(diagnostics?.analysis_lag_ms, ' ms')}</strong></span><span>GPU <strong>{metric(diagnostics?.gpu_util_pct, '%')}</strong></span><span>VRAM <strong>{metric(diagnostics?.vram_used_mb, ' MB')}</strong></span><span>CPU <strong>{metric(diagnostics?.cpu_util_pct, '%')}</strong></span><span>RAM <strong>{metric(diagnostics?.ram_used_mb, ' MB')}</strong></span><span>Dropped <strong>{diagnostics?.dropped_analysis_frames ?? '—'}</strong></span><span>Queue <strong>{diagnostics?.queue_size ?? '—'}</strong></span><span>Profile <strong>{diagnostics?.profile ?? runtime.profile ?? '—'}</strong></span></div></details>}
+      {debugOverlay && <details className="card diagnostics-drawer"><summary>Chẩn đoán runtime</summary><div className="diagnostics-grid"><span>Runtime ID <strong>{diagnostics?.runtime_instance_id ?? runtime.runtime_instance_id ?? '—'}</strong></span><span>Generation <strong>{diagnostics?.runtime_generation ?? runtime.runtime_generation ?? '—'}</strong></span><span>Worker ID <strong>{diagnostics?.worker_instance_id ?? runtime.worker_instance_id ?? '—'}</strong></span><span>Tracker ID <strong>{diagnostics?.tracker_instance_id ?? runtime.tracker_instance_id ?? '—'}</strong></span><span>Tracking seq <strong>{diagnostics?.tracking_seq ?? runtime.tracking_seq}</strong></span><span>Latest AI timestamp <strong>{diagnostics ? `${diagnostics.latest_timestamp_ms} ms` : '—'}</strong></span><span>Raw detections <strong>{diagnostics?.raw_detection_count ?? '—'}</strong></span><span>Active tracks <strong>{diagnostics?.active_track_count ?? '—'}</strong></span><span>Assigned / tentative / unassigned <strong>{diagnostics ? `${diagnostics.assigned_tracks} / ${diagnostics.tentative_tracks} / ${diagnostics.unassigned_tracks}` : '—'}</strong></span><span>Occupied / grace / empty <strong>{diagnostics ? `${diagnostics.occupied_seats} / ${diagnostics.grace_seats} / ${diagnostics.empty_seats}` : '—'}</strong></span><span>Switches / recoveries <strong>{diagnostics ? `${diagnostics.seat_switches} / ${diagnostics.identity_recoveries}` : '—'}</strong></span><span>Source FPS <strong>{metric(diagnostics?.source_fps)}</strong></span><span>Analysis FPS <strong>{metric(diagnostics?.analysis_fps)}</strong></span><span>Target FPS <strong>{metric(diagnostics?.target_analysis_fps)}</strong></span><span>Detector <strong>{metric(diagnostics?.detector_ms, ' ms')}</strong></span><span>Tracker <strong>{metric(diagnostics?.tracker_ms, ' ms')}</strong></span><span>Seat assignment <strong>{metric(diagnostics?.seat_assignment_ms, ' ms')}</strong></span><span>Pipeline <strong>{metric(diagnostics?.pipeline_ms, ' ms')}</strong></span><span>Analysis lag <strong>{metric(diagnostics?.analysis_lag_ms, ' ms')}</strong></span><span>GPU <strong>{metric(diagnostics?.gpu_util_pct, '%')}</strong></span><span>VRAM <strong>{metric(diagnostics?.vram_used_mb, ' MB')}</strong></span><span>CPU <strong>{metric(diagnostics?.cpu_util_pct, '%')}</strong></span><span>RAM <strong>{metric(diagnostics?.ram_used_mb, ' MB')}</strong></span><span>Dropped <strong>{diagnostics?.dropped_analysis_frames ?? '—'}</strong></span><span>Queue <strong>{diagnostics?.queue_size ?? '—'}</strong></span><span>Profile <strong>{diagnostics?.profile ?? runtime.profile ?? '—'}</strong></span></div></details>}
     </>}
     <ConfirmDialog open={confirmStop} title="Kết thúc giám sát?" description="Phiên thi sẽ chuyển sang Đã kết thúc. Hãy chắc chắn video và quá trình giám sát đã hoàn tất." confirmLabel="Kết thúc giám sát" danger onCancel={() => setConfirmStop(false)} onConfirm={() => { setConfirmStop(false); void stop() }} />
   </div>

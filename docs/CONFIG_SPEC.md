@@ -47,6 +47,16 @@ tracker:
   config: /app/configs/tracking/bytetrack_exam.yaml
 diagnostics:
   publish_hz: 2
+seat_assignment:
+  enabled: true
+  overlap_weight: 0.70
+  distance_weight: 0.30
+  min_score: 0.35
+  seat_expand_ratio: 0.08
+  confirm_ms: 600
+  release_ms: 1500
+  switch_margin: 0.15
+  switch_confirm_ms: 800
 ui:
   tracking_interpolation: false
   tracking_smoothing: false
@@ -85,6 +95,16 @@ tracker:
   config: /app/configs/tracking/bytetrack_exam_3060.yaml
 diagnostics:
   publish_hz: 2
+seat_assignment:
+  enabled: true
+  overlap_weight: 0.70
+  distance_weight: 0.30
+  min_score: 0.35
+  seat_expand_ratio: 0.08
+  confirm_ms: 600
+  release_ms: 1500
+  switch_margin: 0.15
+  switch_confirm_ms: 800
 ui:
   tracking_interpolation: false
   tracking_smoothing: false
@@ -123,3 +143,7 @@ limited to strongly contained, center-aligned boxes with materially different ar
 people that merely overlap are retained. Keep `conf=0.10` and `track_low_thresh=0.10` so
 ByteTrack can still associate partially occluded people; do not raise either value merely to
 reduce ID counts.
+
+Seat-assignment weights must be non-negative with a positive sum. `min_score` is in `[0,1]`;
+expansion, confirmation/release durations, switch margin and switch duration are non-negative.
+Weights are applied exactly as configured and are not silently normalized.

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.ai.detector.yolo import PersonDetector
+from app.ai.seat_identity.types import SeatIdentityContext
 from app.monitoring.config import RuntimeProfile
 from app.monitoring.publisher import LatestWebSocketPublisher, Subscriber
 from app.monitoring.worker import VideoAnalysisWorker
@@ -57,6 +58,7 @@ class MonitoringRuntimeManager:
         video_path: Path,
         profile: RuntimeProfile,
         timestamp_ms: int,
+        seat_identity_context: SeatIdentityContext | None = None,
     ) -> dict[str, Any]:
         PersonDetector.validate_environment(profile.detector)
         with self._lock:
@@ -83,6 +85,7 @@ class MonitoringRuntimeManager:
                     session_id, runtime_instance_id, RuntimeState.ERROR, error
                 ),
                 runtime_instance_id=runtime_instance_id,
+                seat_identity_context=seat_identity_context,
             )
             handle = RuntimeHandle(
                 worker=worker,

@@ -7,7 +7,8 @@ Updated: 2026-09-22
 - Greenfield baseline starts at `e6870d2`; `0805e64` preserves the reusable CUDA environment while removing inherited legacy application files.
 - PostgreSQL uses the single `20260920_0001_initial_schema` migration and the approved domain tables only.
 - Docker Compose, CUDA/PyTorch, NVIDIA runtime, FFmpeg, PostgreSQL volume, media storage, YOLO11n and ByteTrack infrastructure remain unchanged.
-- Phase 5.5 does not add TSM, action recognition, fabricated events, or new AI behavior.
+- Seat-Stable Identity adds runtime Track → Seat → SessionCandidate → Candidate resolution.
+  It does not add TSM, action recognition, Proposal Builder, fabricated events, or evidence.
 
 ## Phase 5.5 UX Audit
 
@@ -143,5 +144,34 @@ RBAC USER MANAGEMENT: IMPLEMENTED, BACKEND TEST EXECUTION PENDING
 
 ## Next Boundary
 
-Stop after the Tracking Validation and Benchmark Gate. Do not begin Seat Assignment, candidate
-mapping, ROI, TSM/action recognition, or fabricate event, evidence, report, or appeal data.
+```text
+SEAT-STABLE IDENTITY: NOT PASSED
+IMPLEMENTATION/UNIT/INTEGRATION GATE: PASSED
+```
+
+- Runtime identity context is loaded once at monitoring start. PostgreSQL is not queried per
+  analysis frame, and no tracking/identity history table or migration was added.
+- Matching uses normalized source-video coordinates, explicit overlap/distance scoring, greedy
+  one-to-one assignment, temporal confirmation/release, switch hysteresis, and seat grace.
+- Pause uses no wall clock. Seek resets ByteTrack and Seat Assignment in the same generation
+  transition. A restarted runtime constructs fresh state.
+- WebSocket tracking messages now include compact identity and seat occupancy metadata. The
+  frontend joins `session_candidate_id` with the existing session REST assignments and shows
+  `Seat • Candidate` instead of Track ID in normal mode.
+- Seat calibration now uses an authenticated real media frame or a locally selected MP4 rather
+  than a blank background. Existing H9302 seat coordinates were not automatically overwritten.
+- Three real 60-second clips were evaluated at 5 FPS using production YOLO11n, ByteTrack, and
+  SeatAssignmentEngine: 903 frames, 5,418 expected actor samples, 95.146% correct, 0% wrong,
+  4.854% unassigned, zero false seat switches, and zero false identities across 345 extra-track
+  samples. CPU seat assignment mean/P95 was 0.667/0.770 ms.
+- The overall gate remains NOT PASSED because the available independent sources do not contain
+  a supervisor walking through the aisle or a complete stand/leave/move sequence, and the
+  persisted H9302 layout still needs operator recalibration for the selected camera view. These
+  missing real-world acceptance scenarios must not be replaced by unit-test claims.
+- Backend verification: 85 passed, 1 skipped (explicit CUDA-only test); Ruff passes; mypy passes
+  for 91 source files. Frontend verification: 10 files/28 tests pass and production build passes.
+- Full formulas, state machines, validation definitions and limitations are in
+  `docs/SEAT_STABLE_IDENTITY_REPORT.md`.
+
+Stop after Seat-Stable Identity. Do not automatically begin Proposal Builder, ROI,
+TSM/action recognition, Events, Evidence, Appeals, or Reports.

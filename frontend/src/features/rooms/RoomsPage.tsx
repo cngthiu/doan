@@ -12,6 +12,7 @@ import { useToast } from '../../shared/components/ToastProvider'
 import { useDebouncedValue } from '../../shared/hooks/useDebouncedValue'
 import { hasErrors, normalizedOptional, validateRoom, type FieldErrors } from '../../shared/validation'
 import { permissions, usePermissions } from '../auth/permissions'
+import { getSessions } from '../sessions/api'
 import { createRoom, getRooms, getSeats, updateRoom } from './api'
 import { SeatLayoutEditor } from './SeatLayoutEditor'
 import type { Room, RoomInput, Seat } from './types'
@@ -26,6 +27,8 @@ export function RoomsPage() {
   const [rooms, setRooms] = useState<Room[]>([])
   const [selected, setSelected] = useState<Room | null>(null)
   const [seats, setSeats] = useState<Seat[]>([])
+  const [referenceMediaId, setReferenceMediaId] = useState<string | null>(null)
+  const [referenceTimestampMs, setReferenceTimestampMs] = useState(5000)
   const [form, setForm] = useState<RoomInput>(blankRoom)
   const [editing, setEditing] = useState(false)
   const [query, setQuery] = useState('')
@@ -51,8 +54,17 @@ export function RoomsPage() {
 
   const open = async (room: Room) => {
     setSelected(room); setForm({ code: room.code, name: room.name, description: room.description, is_active: room.is_active })
-    setEditing(true); setError(null); setFieldErrors({})
-    try { setSeats(await getSeats(room.id)) }
+    setEditing(true); setError(null); setFieldErrors({}); setReferenceMediaId(null)
+    try {
+      const [roomSeats, sessions] = await Promise.all([
+        getSeats(room.id),
+        getSessions({ roomId: room.id, pageSize: 20 }),
+      ])
+      setSeats(roomSeats)
+      const referenceSession = sessions.items.find((item) => item.video)
+      setReferenceMediaId(referenceSession?.video_asset_id ?? null)
+      setReferenceTimestampMs(referenceSession?.video ? Math.min(5000, referenceSession.video.duration_ms - 1) : 5000)
+    }
     catch (requestError) { setError(apiContentErrorMessage(requestError)) }
   }
 
@@ -123,7 +135,7 @@ export function RoomsPage() {
         </form>}
       </section>
     </div>
-    {selected && <SeatLayoutEditor key={selected.id} roomId={selected.id} initialSeats={seats} editable={Boolean(editable)} onSaved={setSeats} />}
+    {selected && <SeatLayoutEditor key={selected.id} roomId={selected.id} initialSeats={seats} referenceMediaId={referenceMediaId} referenceTimestampMs={referenceTimestampMs} editable={Boolean(editable)} onSaved={setSeats} />}
     <ConfirmDialog open={confirmDeactivate} title="Vô hiệu hóa phòng thi?" description="Phòng thi sẽ không thể được chọn cho phiên thi mới. Dữ liệu lịch sử vẫn được giữ nguyên." confirmLabel="Vô hiệu hóa" danger onCancel={() => setConfirmDeactivate(false)} onConfirm={() => void persist()} />
   </div>
 }

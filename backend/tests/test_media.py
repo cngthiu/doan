@@ -203,15 +203,53 @@ def test_content_supports_cookie_full_range_invalid_range_and_auth(
     assert client.get(f"/api/v1/media/{asset.id}/content").status_code == 401
 
 
+def test_calibration_frame_uses_media_reader_and_validates_timestamp(
+    client: TestClient,
+    db: Session,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = add_user(db, UserRole.SUPERVISOR)
+    asset = stored_media(db, settings, supervisor)
+    calls: list[tuple[str, int]] = []
+
+    def fake_extract(path: object, timestamp_ms: int) -> bytes:
+        calls.append((str(path), timestamp_ms))
+        return b"jpeg-frame"
+
+    monkeypatch.setattr("app.features.media.router.extract_video_frame", fake_extract)
+    headers = auth(settings, supervisor)
+    response = client.get(
+        f"/api/v1/media/{asset.id}/frame?timestamp_ms=500",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.content == b"jpeg-frame"
+    assert calls == [(str(settings.upload_root / asset.storage_path), 500)]
+    invalid = client.get(
+        f"/api/v1/media/{asset.id}/frame?timestamp_ms=1000",
+        headers=headers,
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "VIDEO_FRAME_TIMESTAMP_INVALID"
+    assert client.get(f"/api/v1/media/{asset.id}/frame?timestamp_ms=100").status_code == 401
+
+
 def test_metadata_authorization_not_found_and_path_traversal(
     client: TestClient,
     db: Session,
     settings: Settings,
 ) -> None:
     reviewer = add_user(db, UserRole.REVIEWER)
-    asset = stored_media(db, settings, reviewer)
+    supervisor = add_user(db, UserRole.SUPERVISOR)
+    asset = stored_media(db, settings, supervisor)
     assert client.get(f"/api/v1/media/{asset.id}").status_code == 401
-    headers = auth(settings, reviewer)
+    assert client.get(
+        f"/api/v1/media/{asset.id}", headers=auth(settings, reviewer)
+    ).status_code == 403
+    headers = auth(settings, supervisor)
     assert client.get(f"/api/v1/media/{asset.id}", headers=headers).status_code == 200
     assert client.get(f"/api/v1/media/{uuid.uuid4()}", headers=headers).status_code == 404
     assert client.get(

@@ -16,3 +16,10 @@ export async function uploadVideo(
   })
   return response.data
 }
+
+export async function getMediaFrame(mediaId: string, timestampMs = 5000): Promise<Blob> {
+  return (await apiClient.get<Blob>(`/media/${mediaId}/frame`, {
+    params: { timestamp_ms: timestampMs },
+    responseType: 'blob',
+  })).data
+}

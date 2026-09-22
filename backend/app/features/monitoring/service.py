@@ -13,6 +13,7 @@ from app.db.models.media import MediaAsset
 from app.db.models.session import ExamSession, ExamSessionStatus
 from app.db.models.user import User
 from app.features.media.service import media_file_path
+from app.features.monitoring.identity_context import load_seat_identity_context
 from app.features.sessions.service import session_or_error, session_response
 from app.monitoring.config import load_runtime_profile
 from app.monitoring.manager import MonitoringRuntimeManager, RuntimeState
@@ -52,6 +53,7 @@ def start_monitoring(
     if asset is None:
         raise ApiError(status.HTTP_409_CONFLICT, "MEDIA_NOT_FOUND", "Session video was not found")
     path = media_file_path(asset, settings)
+    identity_context = load_seat_identity_context(db, exam_session)
     try:
         profile = load_runtime_profile(settings, exam_session.runtime_profile)
         PersonDetector.validate_environment(profile.detector)
@@ -76,7 +78,13 @@ def start_monitoring(
     )
     db.commit()
     try:
-        return manager.start(exam_session.id, path, profile, timestamp_ms)
+        return manager.start(
+            exam_session.id,
+            path,
+            profile,
+            timestamp_ms,
+            seat_identity_context=identity_context,
+        )
     except (RuntimeError, ValueError) as error:
         exam_session.status = ExamSessionStatus.ERROR.value
         db.commit()

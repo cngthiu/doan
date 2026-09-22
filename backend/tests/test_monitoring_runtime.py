@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from app.ai.domain import Detection, RuntimeDiagnostics, TrackedObject
+from app.ai.seat_identity.assignment import SeatAssignmentEngine
 from app.monitoring.buffer import LatestValueBuffer
 from app.monitoring.clock import AnalysisClock
 from app.monitoring.config import (
@@ -251,6 +252,7 @@ def test_runtime_diagnostics_message_is_json_serializable() -> None:
         detector_ms=18.0,
         tracker_ms=1.0,
         pipeline_ms=19.0,
+        seat_assignment_ms=0.4,
         analysis_lag_ms=40.0,
         gpu_util_pct=50.0,
         vram_used_mb=512.0,
@@ -258,6 +260,14 @@ def test_runtime_diagnostics_message_is_json_serializable() -> None:
         ram_used_mb=1024.0,
         dropped_analysis_frames=0,
         queue_size=0,
+        assigned_tracks=1,
+        tentative_tracks=0,
+        unassigned_tracks=0,
+        occupied_seats=1,
+        grace_seats=0,
+        empty_seats=0,
+        seat_switches=0,
+        identity_recoveries=0,
         profile="gtx1650",
     ).as_message()
 
@@ -274,6 +284,7 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
     detectors: list[FakeDetector] = []
     trackers: list[FakeTracker] = []
     decoders: list[FakeDecoder] = []
+    seat_engines: list[SeatAssignmentEngine] = []
 
     def tracker_factory(config: object) -> FakeTracker:
         tracker = FakeTracker(config)
@@ -290,6 +301,19 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
         detectors.append(detector)
         return detector
 
+    def seat_assignment_factory(context: object, config: object) -> SeatAssignmentEngine:
+        engine = SeatAssignmentEngine(context, config)  # type: ignore[arg-type]
+        original_reset = engine.reset
+        engine.reset_count = 0  # type: ignore[attr-defined]
+
+        def reset() -> None:
+            engine.reset_count += 1  # type: ignore[attr-defined]
+            original_reset()
+
+        engine.reset = reset  # type: ignore[method-assign]
+        seat_engines.append(engine)
+        return engine
+
     worker = VideoAnalysisWorker(
         session_id=uuid.uuid4(),
         video_path=Path("video.mp4"),
@@ -302,6 +326,7 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
         detector_factory=detector_factory,
         tracker_factory=tracker_factory,
         decoder_factory=decoder_factory,
+        seat_assignment_factory=seat_assignment_factory,
     )
     worker.start()
     assert ready.wait(0.5)
@@ -330,6 +355,7 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
     assert len(detectors[0].frame_tokens) == len(set(detectors[0].frame_tokens))
     assert decoders[0].released is True
     assert trackers[0].reset_count >= 1
+    assert seat_engines[0].reset_count >= 1  # type: ignore[attr-defined]
     timestamps = [item["timestamp_ms"] for item in messages if item["type"] == "tracking"]
     assert any(timestamp >= 5000 for timestamp in timestamps)
     tracking = [item for item in messages if item["type"] == "tracking"]

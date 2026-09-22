@@ -26,10 +26,27 @@ class MonitoringStatusResponse(BaseModel):
     tracking_seq: int = Field(default=0, ge=0)
 
 
+class TrackIdentityMessage(BaseModel):
+    state: Literal["UNASSIGNED", "TENTATIVE", "ASSIGNED"]
+    seat_id: uuid.UUID | None
+    seat_code: str | None
+    session_candidate_id: uuid.UUID | None
+    score: float | None = Field(default=None, ge=0)
+
+
 class TrackingTrackMessage(BaseModel):
     track_id: int
     bbox_norm: tuple[float, float, float, float]
     confidence: float = Field(ge=0, le=1)
+    identity: TrackIdentityMessage
+
+
+class SeatRuntimeMessage(BaseModel):
+    seat_id: uuid.UUID
+    seat_code: str
+    session_candidate_id: uuid.UUID | None
+    state: Literal["EMPTY", "OCCUPIED", "GRACE"]
+    track_id: int | None
 
 
 class TrackingMessage(BaseModel):
@@ -44,6 +61,7 @@ class TrackingMessage(BaseModel):
     source_width: int = Field(gt=0)
     source_height: int = Field(gt=0)
     tracks: list[TrackingTrackMessage]
+    seats: list[SeatRuntimeMessage]
 
 
 class DiagnosticsMessage(BaseModel):
@@ -64,6 +82,7 @@ class DiagnosticsMessage(BaseModel):
     detector_ms: float | None = Field(default=None, ge=0)
     tracker_ms: float | None = Field(default=None, ge=0)
     pipeline_ms: float | None = Field(default=None, ge=0)
+    seat_assignment_ms: float | None = Field(default=None, ge=0)
     analysis_lag_ms: float = Field(ge=0)
     gpu_util_pct: float | None = Field(default=None, ge=0, le=100)
     vram_used_mb: float | None = Field(default=None, ge=0)
@@ -71,6 +90,14 @@ class DiagnosticsMessage(BaseModel):
     ram_used_mb: float | None = Field(default=None, ge=0)
     dropped_analysis_frames: int = Field(ge=0)
     queue_size: int = Field(ge=0, le=1)
+    assigned_tracks: int = Field(ge=0)
+    tentative_tracks: int = Field(ge=0)
+    unassigned_tracks: int = Field(ge=0)
+    occupied_seats: int = Field(ge=0)
+    grace_seats: int = Field(ge=0)
+    empty_seats: int = Field(ge=0)
+    seat_switches: int = Field(ge=0)
+    identity_recoveries: int = Field(ge=0)
     profile: str
 
 

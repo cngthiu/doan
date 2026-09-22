@@ -32,6 +32,17 @@ tracker:
 diagnostics:
   publish_hz: 2
 
+seat_assignment:
+  enabled: true
+  overlap_weight: 0.70
+  distance_weight: 0.30
+  min_score: 0.35
+  seat_expand_ratio: 0.08
+  confirm_ms: 600
+  release_ms: 1500
+  switch_margin: 0.15
+  switch_confirm_ms: 800
+
 tracking_debug:
   enabled: false
   log_every_n_frames: 10

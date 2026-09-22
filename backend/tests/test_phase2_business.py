@@ -424,6 +424,12 @@ def test_list_pagination_search_and_session_cancellation(
         },
         headers=headers,
     ).json()
+    filtered = client.get(
+        f"/api/v1/sessions?room_id={room['id']}", headers=headers
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["items"][0]["id"] == exam_session["id"]
     cancelled = client.patch(
         f"/api/v1/sessions/{exam_session['id']}",
         json={"status": "CANCELLED"},

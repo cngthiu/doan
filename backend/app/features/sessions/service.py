@@ -180,6 +180,7 @@ def list_sessions(
     session_status: ExamSessionStatus | None = None,
     page: int = 1,
     page_size: int = 20,
+    room_id: uuid.UUID | None = None,
 ) -> tuple[list[SessionResponse], int]:
     statement = select(ExamSession).join(Room, Room.id == ExamSession.room_id)
     if query and (term := query.strip()):
@@ -194,6 +195,8 @@ def list_sessions(
         )
     if session_status is not None:
         statement = statement.where(ExamSession.status == session_status.value)
+    if room_id is not None:
+        statement = statement.where(ExamSession.room_id == room_id)
     total = db.scalar(
         select(func.count()).select_from(statement.order_by(None).subquery())
     ) or 0

@@ -41,7 +41,15 @@ class FakeRuntimeManager:
         self.state = "INACTIVE"
         self.publisher = LatestWebSocketPublisher()
 
-    def start(self, session_id: uuid.UUID, _: Path, __: object, ___: int) -> dict[str, object]:
+    def start(
+        self,
+        session_id: uuid.UUID,
+        _: Path,
+        __: object,
+        ___: int,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        self.identity_context = kwargs.get("seat_identity_context")
         self.state = "INITIALIZING"
         return status_payload(session_id, self.state)
 
@@ -78,7 +86,21 @@ class FakeRuntimeManager:
                 "frame_id": 30,
                 "source_width": 1920,
                 "source_height": 1080,
-                "tracks": [{"track_id": 7, "bbox_norm": [0.1, 0.2, 0.3, 0.8], "confidence": 0.9}],
+                "tracks": [
+                    {
+                        "track_id": 7,
+                        "bbox_norm": [0.1, 0.2, 0.3, 0.8],
+                        "confidence": 0.9,
+                        "identity": {
+                            "state": "ASSIGNED",
+                            "seat_id": str(uuid.uuid4()),
+                            "seat_code": "A01",
+                            "session_candidate_id": str(uuid.uuid4()),
+                            "score": 0.9,
+                        },
+                    }
+                ],
+                "seats": [],
             }
         )
         return subscriber
@@ -170,6 +192,8 @@ def test_monitoring_lifecycle_transitions_and_audit(
     started = client.post(f"{base}/start", json={"timestamp_ms": 400}, headers=headers)
     assert started.status_code == 200
     assert started.json()["state"] == "INITIALIZING"
+    assert manager.identity_context.session_id == exam_session.id  # type: ignore[union-attr]
+    assert manager.identity_context.seats[0].code == "A01"  # type: ignore[union-attr]
     assert db.get(ExamSession, exam_session.id).status == "RUNNING"  # type: ignore[union-attr]
     paused = client.post(f"{base}/pause", json={"timestamp_ms": 700}, headers=headers)
     assert paused.json()["state"] == "PAUSED"
@@ -226,6 +250,7 @@ def test_diagnostics_schema_rejects_fabricated_invalid_ranges() -> None:
         "detector_ms": 58.4,
         "tracker_ms": 2.1,
         "pipeline_ms": 67.2,
+        "seat_assignment_ms": 0.3,
         "analysis_lag_ms": 81,
         "gpu_util_pct": None,
         "vram_used_mb": None,
@@ -233,6 +258,14 @@ def test_diagnostics_schema_rejects_fabricated_invalid_ranges() -> None:
         "ram_used_mb": 6700,
         "dropped_analysis_frames": 18,
         "queue_size": 1,
+        "assigned_tracks": 5,
+        "tentative_tracks": 0,
+        "unassigned_tracks": 1,
+        "occupied_seats": 5,
+        "grace_seats": 0,
+        "empty_seats": 1,
+        "seat_switches": 0,
+        "identity_recoveries": 1,
         "profile": "gtx1650",
     }
     assert DiagnosticsMessage.model_validate(payload).gpu_util_pct is None
