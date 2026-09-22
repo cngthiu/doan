@@ -2,7 +2,7 @@ import math
 import uuid
 
 from fastapi import status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,13 +20,37 @@ def room_or_error(db: Session, room_id: uuid.UUID) -> Room:
     return room
 
 
-def list_rooms(db: Session) -> list[Room]:
-    return list(db.scalars(select(Room).order_by(Room.code)))
+def list_rooms(
+    db: Session,
+    query: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[Room], int]:
+    statement = select(Room)
+    if query and (term := query.strip()):
+        pattern = f"%{term}%"
+        statement = statement.where(
+            or_(Room.code.ilike(pattern), Room.name.ilike(pattern))
+        )
+    total = db.scalar(
+        select(func.count()).select_from(statement.order_by(None).subquery())
+    ) or 0
+    items = list(
+        db.scalars(
+            statement.order_by(Room.code).offset((page - 1) * page_size).limit(page_size)
+        )
+    )
+    return items, total
 
 
 def create_room(db: Session, payload: RoomCreate, actor: User) -> Room:
     if db.scalar(select(Room.id).where(Room.code == payload.code)) is not None:
-        raise ApiError(status.HTTP_409_CONFLICT, "ROOM_CODE_EXISTS", "Room code already exists")
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "ROOM_CODE_EXISTS",
+            "Room code already exists",
+            field_name="code",
+        )
 
     room = Room(**payload.model_dump())
     db.add(room)
@@ -47,6 +71,7 @@ def create_room(db: Session, payload: RoomCreate, actor: User) -> Room:
             status.HTTP_409_CONFLICT,
             "ROOM_CODE_EXISTS",
             "Room code already exists",
+            field_name="code",
         ) from error
     db.refresh(room)
     return room
@@ -65,6 +90,7 @@ def update_room(db: Session, room_id: uuid.UUID, payload: RoomUpdate, actor: Use
                 status.HTTP_409_CONFLICT,
                 "ROOM_CODE_EXISTS",
                 "Room code already exists",
+                field_name="code",
             )
 
     for field, value in changes.items():
@@ -86,6 +112,7 @@ def update_room(db: Session, room_id: uuid.UUID, payload: RoomUpdate, actor: Use
             status.HTTP_409_CONFLICT,
             "ROOM_CODE_EXISTS",
             "Room code already exists",
+            field_name="code",
         ) from error
     db.refresh(room)
     return room
@@ -111,6 +138,7 @@ def _validate_layout(seats: list[SeatWrite]) -> None:
                 "SEAT_CODE_DUPLICATE",
                 "Seat codes must be unique inside a room",
                 {"seat_code": seat.code},
+                field_name="seats",
             )
         codes.add(seat.code)
         if seat.id is not None:
@@ -138,6 +166,7 @@ def _validate_layout(seats: list[SeatWrite]) -> None:
                 "SEAT_OUTSIDE_FRAME",
                 "Seat geometry must remain inside the normalized frame",
                 {"seat_code": seat.code},
+                field_name="seats",
             )
 
 
@@ -176,6 +205,7 @@ def replace_seat_layout(
                 "SEAT_CODE_DUPLICATE",
                 "Seat codes must be unique inside a room",
                 {"seat_code": item.code},
+                field_name="seats",
             )
         if target is not None:
             if target.id in target_ids:
@@ -222,5 +252,6 @@ def replace_seat_layout(
             status.HTTP_409_CONFLICT,
             "SEAT_CODE_DUPLICATE",
             "Seat codes must be unique inside a room",
+            field_name="seats",
         ) from error
     return list_active_seats(db, room.id)

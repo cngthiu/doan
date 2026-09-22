@@ -2,6 +2,21 @@
 
 Prefix: `/api/v1`
 
+## Pagination
+List endpoints use:
+```text
+?page=1&page_size=20&q=...
+```
+with `page_size` limited to 100. Paginated responses use:
+```json
+{"items": [], "page": 1, "page_size": 20, "total": 0}
+```
+
+Application errors use a stable code and may identify the affected field:
+```json
+{"error":{"code":"CANDIDATE_CODE_EXISTS","message":"Candidate code already exists","field":"candidate_code","details":{}}}
+```
+
 ## Auth
 ```text
 POST /api/v1/auth/login
@@ -10,7 +25,7 @@ GET  /api/v1/auth/me
 
 ## Rooms
 ```text
-GET   /api/v1/rooms
+GET   /api/v1/rooms?page=1&page_size=20&q=...
 POST  /api/v1/rooms
 GET   /api/v1/rooms/{room_id}
 PATCH /api/v1/rooms/{room_id}
@@ -25,7 +40,7 @@ PUT validates unique codes and normalized geometry.
 
 ## Candidates
 ```text
-GET   /api/v1/candidates?q=...
+GET   /api/v1/candidates?page=1&page_size=20&q=...
 POST  /api/v1/candidates
 GET   /api/v1/candidates/{candidate_id}
 PATCH /api/v1/candidates/{candidate_id}
@@ -43,13 +58,15 @@ Upload response should include filename, media URL, width, height, FPS, duration
 
 ## Sessions
 ```text
-GET   /api/v1/sessions
+GET   /api/v1/sessions?page=1&page_size=20&q=...&status=READY
 POST  /api/v1/sessions
 GET   /api/v1/sessions/{session_id}
 PATCH /api/v1/sessions/{session_id}
 PUT   /api/v1/sessions/{session_id}/candidates
 ```
 Candidate assignment must reject duplicate candidates/seats and seats from another room.
+Sessions may be edited only before monitoring starts. `DRAFT` or `READY` sessions may be
+cancelled with `PATCH {"status":"CANCELLED"}`; cancelled and historical sessions remain read-only.
 
 ## Monitoring lifecycle
 ```text
@@ -74,6 +91,10 @@ Tracking message:
 {
   "type": "tracking",
   "session_id": "uuid",
+  "runtime_instance_id": "uuid",
+  "runtime_generation": 1,
+  "tracker_instance_id": "uuid",
+  "tracking_seq": 138,
   "timestamp_ms": 53240,
   "frame_id": 1331,
   "source_width": 1920,
@@ -83,6 +104,10 @@ Tracking message:
   ]
 }
 ```
+Clients accept only increasing `tracking_seq` values for the active runtime instance/generation.
+Seek increments the runtime generation; runtime restart changes the runtime instance identifier.
+Tracking payloads contain tracked objects only. Raw detections are available only in development
+logs and benchmark CSV output.
 Diagnostics message includes analysis_fps, detector_ms, tracker_ms, pipeline_ms, gpu_util_pct, vram_used_mb, cpu_util_pct, ram_used_mb and dropped_analysis_frames.
 
 ## Manual events

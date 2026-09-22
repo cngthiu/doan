@@ -31,10 +31,12 @@ class RuntimeHandle:
     worker: VideoAnalysisWorker
     profile: RuntimeProfile
     publisher: LatestWebSocketPublisher
+    runtime_instance_id: uuid.UUID
     state: RuntimeState = RuntimeState.INITIALIZING
     synchronizing: bool = True
     error: str | None = None
     latest_diagnostics: dict[str, Any] | None = None
+    latest_tracking_seq: int = 0
 
 
 class MonitoringRuntimeManager:
@@ -66,17 +68,28 @@ class MonitoringRuntimeManager:
             }:
                 raise RuntimeError("Monitoring runtime đã hoạt động")
             publisher = LatestWebSocketPublisher()
+            runtime_instance_id = uuid.uuid4()
             worker = self._worker_factory(
                 session_id=session_id,
                 video_path=video_path,
                 profile=profile,
                 start_timestamp_ms=timestamp_ms,
-                publish=lambda message: self._publish(session_id, message),
-                on_ready=lambda: self._mark_ready(session_id),
-                on_complete=lambda: self._terminal(session_id, RuntimeState.COMPLETED, None),
-                on_error=lambda error: self._terminal(session_id, RuntimeState.ERROR, error),
+                publish=lambda message: self._publish(session_id, runtime_instance_id, message),
+                on_ready=lambda: self._mark_ready(session_id, runtime_instance_id),
+                on_complete=lambda: self._terminal(
+                    session_id, runtime_instance_id, RuntimeState.COMPLETED, None
+                ),
+                on_error=lambda error: self._terminal(
+                    session_id, runtime_instance_id, RuntimeState.ERROR, error
+                ),
+                runtime_instance_id=runtime_instance_id,
             )
-            handle = RuntimeHandle(worker=worker, profile=profile, publisher=publisher)
+            handle = RuntimeHandle(
+                worker=worker,
+                profile=profile,
+                publisher=publisher,
+                runtime_instance_id=runtime_instance_id,
+            )
             self._handles[session_id] = handle
             worker.start()
             self._publish_state(session_id)
@@ -127,6 +140,11 @@ class MonitoringRuntimeManager:
                     "queue_size": 0,
                     "dropped_analysis_frames": 0,
                     "diagnostics": None,
+                    "runtime_instance_id": None,
+                    "runtime_generation": None,
+                    "worker_instance_id": None,
+                    "tracker_instance_id": None,
+                    "tracking_seq": 0,
                 }
             return {
                 "session_id": str(session_id),
@@ -137,6 +155,15 @@ class MonitoringRuntimeManager:
                 "queue_size": handle.worker.queue_size,
                 "dropped_analysis_frames": handle.worker.dropped_analysis_frames,
                 "diagnostics": handle.latest_diagnostics,
+                "runtime_instance_id": str(handle.runtime_instance_id),
+                "runtime_generation": getattr(handle.worker, "runtime_generation", 0),
+                "worker_instance_id": str(getattr(handle.worker, "worker_instance_id", "")) or None,
+                "tracker_instance_id": (
+                    handle.latest_diagnostics.get("tracker_instance_id")
+                    if handle.latest_diagnostics
+                    else None
+                ),
+                "tracking_seq": handle.latest_tracking_seq,
             }
 
     def subscribe(self, session_id: uuid.UUID) -> Subscriber:
@@ -173,15 +200,26 @@ class MonitoringRuntimeManager:
                 raise RuntimeError(f"Trạng thái runtime không hợp lệ: {current}")
             return handle
 
-    def _publish(self, session_id: uuid.UUID, message: dict[str, Any]) -> None:
+    def _publish(
+        self,
+        session_id: uuid.UUID,
+        runtime_instance_id: uuid.UUID,
+        message: dict[str, Any],
+    ) -> None:
         with self._lock:
             handle = self._handles.get(session_id)
-            if handle is None:
+            if handle is None or handle.runtime_instance_id != runtime_instance_id:
+                return
+            message_generation = message.get("runtime_generation")
+            if message_generation is not None and message_generation != getattr(
+                handle.worker, "runtime_generation", 0
+            ):
                 return
             if message.get("type") == "diagnostics":
                 handle.latest_diagnostics = message
             elif message.get("type") == "tracking":
                 handle.synchronizing = False
+                handle.latest_tracking_seq = int(message.get("tracking_seq", 0))
             publisher = handle.publisher
         publisher.publish(message)
 
@@ -201,10 +239,14 @@ class MonitoringRuntimeManager:
                 handle.synchronizing = synchronizing
         self._publish_state(session_id)
 
-    def _mark_ready(self, session_id: uuid.UUID) -> None:
+    def _mark_ready(self, session_id: uuid.UUID, runtime_instance_id: uuid.UUID) -> None:
         with self._lock:
             handle = self._handles.get(session_id)
-            if handle is None or handle.state != RuntimeState.INITIALIZING:
+            if (
+                handle is None
+                or handle.runtime_instance_id != runtime_instance_id
+                or handle.state != RuntimeState.INITIALIZING
+            ):
                 return
             handle.state = RuntimeState.RUNNING
         self._publish_state(session_id)
@@ -212,12 +254,17 @@ class MonitoringRuntimeManager:
     def _terminal(
         self,
         session_id: uuid.UUID,
+        runtime_instance_id: uuid.UUID,
         state: RuntimeState,
         error: str | None,
     ) -> None:
         with self._lock:
             handle = self._handles.get(session_id)
-            if handle is None or handle.state in {RuntimeState.COMPLETED, RuntimeState.ERROR}:
+            if (
+                handle is None
+                or handle.runtime_instance_id != runtime_instance_id
+                or handle.state in {RuntimeState.COMPLETED, RuntimeState.ERROR}
+            ):
                 return
             handle.state = state
             handle.synchronizing = False
@@ -239,6 +286,15 @@ class MonitoringRuntimeManager:
                 "state": handle.state.value,
                 "synchronizing": handle.synchronizing,
                 "error": handle.error,
+                "runtime_instance_id": str(handle.runtime_instance_id),
+                "runtime_generation": getattr(handle.worker, "runtime_generation", 0),
+                "worker_instance_id": str(getattr(handle.worker, "worker_instance_id", "")) or None,
+                "tracker_instance_id": (
+                    handle.latest_diagnostics.get("tracker_instance_id")
+                    if handle.latest_diagnostics
+                    else None
+                ),
+                "tracking_seq": handle.latest_tracking_seq,
             }
             publisher = handle.publisher
         publisher.publish(message)

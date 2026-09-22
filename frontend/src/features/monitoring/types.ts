@@ -9,6 +9,10 @@ export interface TrackingTrack {
 export interface TrackingFrame {
   type: 'tracking'
   session_id: string
+  runtime_instance_id: string
+  runtime_generation: number
+  tracker_instance_id: string
+  tracking_seq: number
   timestamp_ms: number
   frame_id: number
   source_width: number
@@ -19,6 +23,15 @@ export interface TrackingFrame {
 export interface RuntimeDiagnostics {
   type: 'diagnostics'
   session_id: string
+  runtime_instance_id: string
+  runtime_generation: number
+  worker_instance_id: string
+  tracker_instance_id: string
+  tracking_seq: number
+  latest_frame_id: number
+  latest_timestamp_ms: number
+  raw_detection_count: number
+  active_track_count: number
   source_fps: number
   target_analysis_fps: number
   analysis_fps: number
@@ -41,6 +54,11 @@ export interface RuntimeStateMessage {
   state: RuntimeState
   synchronizing: boolean
   error: string | null
+  runtime_instance_id: string
+  runtime_generation: number
+  worker_instance_id: string | null
+  tracker_instance_id: string | null
+  tracking_seq: number
 }
 
 export type MonitoringMessage = TrackingFrame | RuntimeDiagnostics | RuntimeStateMessage
@@ -54,4 +72,9 @@ export interface MonitoringStatus {
   queue_size: number
   dropped_analysis_frames: number
   diagnostics: RuntimeDiagnostics | null
+  runtime_instance_id: string | null
+  runtime_generation: number | null
+  worker_instance_id: string | null
+  tracker_instance_id: string | null
+  tracking_seq: number
 }

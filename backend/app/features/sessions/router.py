@@ -1,7 +1,9 @@
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
+from app.db.models.session import ExamSessionStatus
 from app.features.auth.dependencies import (
     ApplicationSettings,
     CurrentUser,
@@ -22,13 +24,22 @@ from app.features.sessions.service import (
     session_response,
     update_session,
 )
+from app.shared.pagination import Page
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
-@router.get("", response_model=list[SessionResponse])
-def get_sessions(_: CurrentUser, db: DatabaseSession) -> list[SessionResponse]:
-    return list_sessions(db)
+@router.get("", response_model=Page[SessionResponse])
+def get_sessions(
+    _: CurrentUser,
+    db: DatabaseSession,
+    q: str | None = Query(default=None, max_length=255),
+    session_status: Annotated[ExamSessionStatus | None, Query(alias="status")] = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> Page[SessionResponse]:
+    sessions, total = list_sessions(db, q, session_status, page, page_size)
+    return Page(items=sessions, page=page, page_size=page_size, total=total)
 
 
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)

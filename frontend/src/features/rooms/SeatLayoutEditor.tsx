@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 
 import { apiErrorMessage } from '../../shared/api/errors'
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog'
+import { EmptyState } from '../../shared/components/EmptyState'
 import { ErrorState } from '../../shared/components/ErrorState'
+import { useToast } from '../../shared/components/ToastProvider'
+import { useUnsavedChanges } from '../../shared/hooks/useUnsavedChanges'
+import { valuesChanged } from '../../shared/validation'
 import { saveSeats } from './api'
 import type { Seat } from './types'
 
@@ -32,7 +37,11 @@ export function SeatLayoutEditor({
   const [drag, setDrag] = useState<DragState | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [removeIndex, setRemoveIndex] = useState<number | null>(null)
   const areaRef = useRef<HTMLDivElement>(null)
+  const toast = useToast()
+  const dirty = valuesChanged(seats, initialSeats)
+  useUnsavedChanges(dirty)
 
   useEffect(() => setSeats(copySeats(initialSeats)), [initialSeats])
 
@@ -101,8 +110,17 @@ export function SeatLayoutEditor({
   }
 
   const submit = async () => {
-    setSaving(true)
     setError(null)
+    const normalizedCodes = seats.map((seat) => seat.code.trim().toUpperCase())
+    if (normalizedCodes.some((code) => !code)) {
+      setError('Mã chỗ ngồi là bắt buộc.')
+      return
+    }
+    if (new Set(normalizedCodes).size !== normalizedCodes.length) {
+      setError('Mã chỗ ngồi không được trùng trong cùng phòng thi.')
+      return
+    }
+    setSaving(true)
     try {
       const saved = await saveSeats(roomId, seats.map((seat, index) => ({
         ...seat,
@@ -111,6 +129,7 @@ export function SeatLayoutEditor({
       })))
       setSeats(copySeats(saved))
       onSaved(saved)
+      toast.success('Đã lưu bố trí chỗ ngồi.')
     } catch (requestError) {
       setError(apiErrorMessage(requestError))
     } finally {
@@ -122,14 +141,14 @@ export function SeatLayoutEditor({
     <section className="card layout-editor">
       <div className="section-heading">
         <div>
-          <h2>Sơ đồ ghế</h2>
+          <h2>Bố trí chỗ ngồi</h2>
           <p>Tọa độ được lưu theo tỷ lệ chuẩn hóa, không phụ thuộc kích thước màn hình.</p>
         </div>
-        {editable && <button className="secondary-button" type="button" onClick={addSeat}>Thêm ghế</button>}
+        {editable && <button className="secondary-button" type="button" onClick={addSeat}>Thêm chỗ ngồi</button>}
       </div>
       {error && <ErrorState message={error} />}
-      <div className="calibration-area" ref={areaRef} aria-label="Vùng hiệu chỉnh ghế">
-        <span className="calibration-label">Vùng hiệu chỉnh trung tính</span>
+      <div className="calibration-area" ref={areaRef} aria-label="Vùng hiệu chỉnh chỗ ngồi">
+        <span className="calibration-label">Khung hình hiệu chỉnh</span>
         {seats.map((seat, index) => (
           <div
             className="seat-box"
@@ -145,7 +164,7 @@ export function SeatLayoutEditor({
             <strong>{seat.code}</strong>
             {editable && (
               <button
-                aria-label={`Đổi kích thước ghế ${seat.code}`}
+                aria-label={`Đổi kích thước chỗ ngồi ${seat.code}`}
                 className="resize-handle"
                 type="button"
                 onPointerDown={(event) => startDrag(event, index, 'resize')}
@@ -154,10 +173,10 @@ export function SeatLayoutEditor({
           </div>
         ))}
       </div>
-      {seats.length === 0 && <p className="empty-copy">Chưa có ghế trong phòng.</p>}
+      {seats.length === 0 && <EmptyState title="Chưa có chỗ ngồi trong phòng thi." description="Thêm chỗ ngồi và đặt vị trí trên khung hình hiệu chỉnh." />}
       {editable && seats.map((seat, index) => (
         <div className="seat-row" key={seat.id ?? index}>
-          <label htmlFor={`seat-${index}`}>Ghế {index + 1}</label>
+          <label htmlFor={`seat-${index}`}>Chỗ {index + 1}</label>
           <input
             id={`seat-${index}`}
             value={seat.code}
@@ -165,9 +184,10 @@ export function SeatLayoutEditor({
               itemIndex === index ? { ...item, code: event.target.value } : item
             )))}
           />
-          <button className="danger-link" type="button" onClick={() => (
-            setSeats((current) => current.filter((_, itemIndex) => itemIndex !== index))
-          )}>Xóa</button>
+          <button className="danger-link" type="button" onClick={() => {
+            if (seat.id) setRemoveIndex(index)
+            else setSeats((current) => current.filter((_, itemIndex) => itemIndex !== index))
+          }}>Bỏ</button>
         </div>
       ))}
       {editable && (
@@ -178,8 +198,21 @@ export function SeatLayoutEditor({
           <button className="secondary-button" type="button" onClick={() => setSeats(copySeats(initialSeats))}>
             Hủy thay đổi
           </button>
+          {dirty && <span className="unsaved-note">Có thay đổi chưa được lưu.</span>}
         </div>
       )}
+      <ConfirmDialog
+        open={removeIndex !== null}
+        title="Bỏ chỗ ngồi khỏi bố trí?"
+        description="Chỗ ngồi đã dùng trong lịch sử sẽ được vô hiệu hóa thay vì xóa dữ liệu liên quan. Thay đổi chỉ có hiệu lực sau khi lưu."
+        confirmLabel="Bỏ chỗ ngồi"
+        danger
+        onCancel={() => setRemoveIndex(null)}
+        onConfirm={() => {
+          setSeats((current) => current.filter((_, index) => index !== removeIndex))
+          setRemoveIndex(null)
+        }}
+      />
     </section>
   )
 }

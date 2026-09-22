@@ -63,6 +63,11 @@ def create_app() -> FastAPI:
             code="VALIDATION_ERROR",
             message="Request validation failed",
             details={"errors": details},
+            field_name=(
+                str(error.errors()[0]["loc"][-1])
+                if error.errors() and error.errors()[0]["loc"]
+                else None
+            ),
         )
         return JSONResponse(status_code=422, content=error_payload(api_error))
 

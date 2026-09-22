@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 
 import { ErrorState } from '../../shared/components/ErrorState'
+import { FormField } from '../../shared/components/FormField'
 import { useAuth } from './AuthProvider'
 
 function loginErrorMessage(error: unknown): string {
@@ -18,6 +19,7 @@ export function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({})
   const [submitting, setSubmitting] = useState(false)
 
   if (user) return <Navigate to="/" replace />
@@ -25,9 +27,16 @@ export function LoginPage() {
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError(null)
+    const normalizedUsername = username.trim()
+    const validation = {
+      username: normalizedUsername ? undefined : 'Tên đăng nhập là bắt buộc.',
+      password: password ? undefined : 'Mật khẩu là bắt buộc.',
+    }
+    setFieldErrors(validation)
+    if (validation.username || validation.password) return
     setSubmitting(true)
     try {
-      await login(username, password)
+      await login(normalizedUsername, password)
       navigate('/', { replace: true })
     } catch (requestError) {
       setError(loginErrorMessage(requestError))
@@ -44,24 +53,13 @@ export function LoginPage() {
         <h1 id="login-title">Đăng nhập hệ thống</h1>
         <p className="secondary-text">Nền tảng giám sát và rà soát phòng thi</p>
         {error && <ErrorState message={error} />}
-        <form onSubmit={submit}>
-          <label htmlFor="username">Tên đăng nhập</label>
-          <input
-            id="username"
-            autoComplete="username"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            required
-          />
-          <label htmlFor="password">Mật khẩu</label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            required
-          />
+        <form onSubmit={submit} noValidate>
+          <FormField label="Tên đăng nhập" htmlFor="username" required error={fieldErrors.username}>
+            <input id="username" autoComplete="username" maxLength={100} value={username} onChange={(event) => setUsername(event.target.value)} />
+          </FormField>
+          <FormField label="Mật khẩu" htmlFor="password" required error={fieldErrors.password}>
+            <input id="password" type="password" autoComplete="current-password" maxLength={1024} value={password} onChange={(event) => setPassword(event.target.value)} />
+          </FormField>
           <button className="primary-button" type="submit" disabled={submitting}>
             {submitting ? 'Đang đăng nhập…' : 'Đăng nhập'}
           </button>

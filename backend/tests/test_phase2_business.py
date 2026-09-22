@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.security import create_access_token, hash_password
 from app.db.models.audit import AuditLog
+from app.db.models.candidate import Candidate
 from app.db.models.media import MediaAsset
 from app.db.models.room import Room, Seat
 from app.db.models.session import ExamSession, SessionCandidate
@@ -69,7 +70,9 @@ def test_rooms_crud_duplicate_deactivate_and_audit(
     assert updated.status_code == 200
     assert updated.json()["name"] == "Phòng thi 101"
     assert updated.json()["is_active"] is False
-    assert len(client.get("/api/v1/rooms", headers=headers).json()) == 1
+    room_page = client.get("/api/v1/rooms", headers=headers).json()
+    assert len(room_page["items"]) == 1
+    assert room_page["total"] == 1
     actions = set(db.scalars(select(AuditLog.action)))
     assert {"ROOM_CREATED", "ROOM_UPDATED"} <= actions
 
@@ -128,9 +131,11 @@ def test_candidate_create_search_duplicate_update(
     created = client.post("/api/v1/candidates", json=payload, headers=headers)
     assert created.status_code == 201
     assert created.json()["candidate_code"] == "SV103"
-    assert client.post("/api/v1/candidates", json=payload, headers=headers).status_code == 409
+    duplicate = client.post("/api/v1/candidates", json=payload, headers=headers)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["field"] == "candidate_code"
     found = client.get("/api/v1/candidates?q=SV103", headers=headers)
-    assert [item["id"] for item in found.json()] == [created.json()["id"]]
+    assert [item["id"] for item in found.json()["items"]] == [created.json()["id"]]
     updated = client.patch(
         f"/api/v1/candidates/{created.json()['id']}",
         json={"class_name": "CNTT2"},
@@ -348,11 +353,13 @@ def test_role_authorization(
         headers=supervisor_headers,
     )
     assert session.status_code == 201
-    assert client.patch(
+    supervisor_update = client.patch(
         f"/api/v1/sessions/{session.json()['id']}",
-        json={"exam_name": "Không được sửa"},
+        json={"exam_name": "Mạng máy tính"},
         headers=supervisor_headers,
-    ).status_code == 403
+    )
+    assert supervisor_update.status_code == 200
+    assert supervisor_update.json()["exam_name"] == "Mạng máy tính"
     assert client.put(
         f"/api/v1/sessions/{session.json()['id']}/candidates",
         json={"assignments": []},
@@ -380,3 +387,54 @@ def test_inactive_room_rejects_new_assignments(
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "ROOM_INACTIVE"
     assert db.scalar(select(func.count(SessionCandidate.id))) == 0
+
+
+def test_list_pagination_search_and_session_cancellation(
+    client: TestClient,
+    db: Session,
+    settings: Settings,
+) -> None:
+    admin = add_user(db, UserRole.ADMIN, "admin-pagination")
+    headers = auth(settings, admin)
+    db.add_all(
+        [
+            Candidate(candidate_code=f"PAGE-{index:02d}", full_name=f"Thí sinh {index:02d}")
+            for index in range(25)
+        ]
+    )
+    db.commit()
+
+    first = client.get("/api/v1/candidates?page=1&page_size=10&q=PAGE", headers=headers)
+    second = client.get("/api/v1/candidates?page=2&page_size=10&q=PAGE", headers=headers)
+    assert first.status_code == 200
+    assert first.json()["total"] == 25
+    assert len(first.json()["items"]) == 10
+    assert first.json()["items"][0]["id"] != second.json()["items"][0]["id"]
+    assert client.get("/api/v1/candidates?page=0", headers=headers).status_code == 422
+
+    room = client.post(
+        "/api/v1/rooms", json=room_payload("P-PAGE"), headers=headers
+    ).json()
+    exam_session = client.post(
+        "/api/v1/sessions",
+        json={
+            "session_code": "CANCEL-ME",
+            "exam_name": "Phiên sẽ hủy",
+            "room_id": room["id"],
+        },
+        headers=headers,
+    ).json()
+    cancelled = client.patch(
+        f"/api/v1/sessions/{exam_session['id']}",
+        json={"status": "CANCELLED"},
+        headers=headers,
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "CANCELLED"
+    locked = client.patch(
+        f"/api/v1/sessions/{exam_session['id']}",
+        json={"exam_name": "Không được đổi"},
+        headers=headers,
+    )
+    assert locked.status_code == 409
+    assert "SESSION_CANCELLED" in set(db.scalars(select(AuditLog.action)))

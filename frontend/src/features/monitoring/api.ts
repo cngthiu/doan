@@ -13,8 +13,8 @@ export async function pauseMonitoring(sessionId: string, timestampMs: number): P
   return (await apiClient.post<MonitoringStatus>(`/sessions/${sessionId}/pause`, { timestamp_ms: timestampMs })).data
 }
 
-export async function resumeMonitoring(sessionId: string, timestampMs: number): Promise<MonitoringStatus> {
-  return (await apiClient.post<MonitoringStatus>(`/sessions/${sessionId}/resume`, { timestamp_ms: timestampMs })).data
+export async function resumeMonitoring(sessionId: string): Promise<MonitoringStatus> {
+  return (await apiClient.post<MonitoringStatus>(`/sessions/${sessionId}/resume`)).data
 }
 
 export async function seekMonitoring(sessionId: string, timestampMs: number): Promise<MonitoringStatus> {

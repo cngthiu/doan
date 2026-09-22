@@ -106,6 +106,7 @@ class SessionReadiness(BaseModel):
     room_selected: bool
     room_active: bool
     seat_layout_available: bool
+    active_seats: int
     candidates_assigned: int
     video_configured: bool
     monitoring_status: str

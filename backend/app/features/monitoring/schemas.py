@@ -19,6 +19,11 @@ class MonitoringStatusResponse(BaseModel):
     queue_size: int = Field(ge=0, le=1)
     dropped_analysis_frames: int = Field(ge=0)
     diagnostics: dict[str, Any] | None
+    runtime_instance_id: uuid.UUID | None = None
+    runtime_generation: int | None = Field(default=None, ge=0)
+    worker_instance_id: uuid.UUID | None = None
+    tracker_instance_id: uuid.UUID | None = None
+    tracking_seq: int = Field(default=0, ge=0)
 
 
 class TrackingTrackMessage(BaseModel):
@@ -30,6 +35,10 @@ class TrackingTrackMessage(BaseModel):
 class TrackingMessage(BaseModel):
     type: Literal["tracking"]
     session_id: uuid.UUID
+    runtime_instance_id: uuid.UUID
+    runtime_generation: int = Field(ge=0)
+    tracker_instance_id: uuid.UUID
+    tracking_seq: int = Field(gt=0)
     timestamp_ms: int = Field(ge=0)
     frame_id: int = Field(ge=0)
     source_width: int = Field(gt=0)
@@ -40,6 +49,15 @@ class TrackingMessage(BaseModel):
 class DiagnosticsMessage(BaseModel):
     type: Literal["diagnostics"]
     session_id: uuid.UUID
+    runtime_instance_id: uuid.UUID
+    runtime_generation: int = Field(ge=0)
+    worker_instance_id: uuid.UUID
+    tracker_instance_id: uuid.UUID
+    tracking_seq: int = Field(ge=0)
+    latest_frame_id: int = Field(ge=0)
+    latest_timestamp_ms: int = Field(ge=0)
+    raw_detection_count: int = Field(ge=0)
+    active_track_count: int = Field(ge=0)
     source_fps: float = Field(gt=0)
     target_analysis_fps: float = Field(gt=0)
     analysis_fps: float = Field(ge=0)
@@ -54,3 +72,16 @@ class DiagnosticsMessage(BaseModel):
     dropped_analysis_frames: int = Field(ge=0)
     queue_size: int = Field(ge=0, le=1)
     profile: str
+
+
+class RuntimeStateMessage(BaseModel):
+    type: Literal["state"]
+    session_id: uuid.UUID
+    state: Literal["INACTIVE", "INITIALIZING", "RUNNING", "PAUSED", "COMPLETED", "ERROR"]
+    synchronizing: bool
+    error: str | None
+    runtime_instance_id: uuid.UUID
+    runtime_generation: int = Field(ge=0)
+    worker_instance_id: uuid.UUID | None = None
+    tracker_instance_id: uuid.UUID | None = None
+    tracking_seq: int = Field(ge=0)

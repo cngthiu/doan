@@ -10,6 +10,45 @@ interface TrackingCanvasProps {
   showConfidence?: boolean
 }
 
+interface ClearableCanvasContext {
+  clearRect(x: number, y: number, width: number, height: number): void
+  setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void
+}
+
+export function clearCanvasBackingStore(
+  context: ClearableCanvasContext,
+  canvas: Pick<HTMLCanvasElement, 'width' | 'height'>,
+): void {
+  context.setTransform(1, 0, 0, 1, 0, 0)
+  context.clearRect(0, 0, canvas.width, canvas.height)
+}
+
+interface VideoFrameScheduler {
+  requestVideoFrameCallback(callback: () => void): number
+  cancelVideoFrameCallback?(callbackId: number): void
+}
+
+export function startTrackingRenderLoop(
+  video: VideoFrameScheduler,
+  draw: () => void,
+): () => void {
+  let callbackId = 0
+  let stopped = false
+  const schedule = () => {
+    if (stopped) return
+    callbackId = video.requestVideoFrameCallback(() => {
+      if (stopped) return
+      draw()
+      schedule()
+    })
+  }
+  schedule()
+  return () => {
+    stopped = true
+    if (callbackId) video.cancelVideoFrameCallback?.(callbackId)
+  }
+}
+
 export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = false }: TrackingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -18,7 +57,6 @@ export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = fa
     const video = videoRef.current
     if (!canvas || !video) return
     let animationId = 0
-    let videoFrameId = 0
     let stopped = false
 
     const draw = () => {
@@ -33,8 +71,8 @@ export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = fa
         canvas.width = targetWidth
         canvas.height = targetHeight
       }
+      clearCanvasBackingStore(context, canvas)
       context.setTransform(ratio, 0, 0, ratio, 0, 0)
-      context.clearRect(0, 0, width, height)
       const frame = buffer.nearest(video.currentTime * 1000)
       if (!frame) return
       const content = containedVideoRect(width, height, video.videoWidth, video.videoHeight)
@@ -54,27 +92,34 @@ export function TrackingCanvas({ videoRef, buffer, revision, showConfidence = fa
       }
     }
 
-    const schedule = () => {
-      if (stopped) return
-      if ('requestVideoFrameCallback' in video) {
-        videoFrameId = video.requestVideoFrameCallback(() => { draw(); schedule() })
-      } else {
-        animationId = window.requestAnimationFrame(() => { draw(); schedule() })
-      }
+    const cancelVideoLoop = 'requestVideoFrameCallback' in video
+      ? startTrackingRenderLoop(video, draw)
+      : null
+    const scheduleAnimation = () => {
+      if (stopped || cancelVideoLoop) return
+      animationId = window.requestAnimationFrame(() => { draw(); scheduleAnimation() })
     }
     const observer = new ResizeObserver(draw)
     if (canvas.parentElement) observer.observe(canvas.parentElement)
     document.addEventListener('fullscreenchange', draw)
     draw()
-    schedule()
+    scheduleAnimation()
     return () => {
       stopped = true
       observer.disconnect()
       document.removeEventListener('fullscreenchange', draw)
       if (animationId) window.cancelAnimationFrame(animationId)
-      if (videoFrameId && 'cancelVideoFrameCallback' in video) video.cancelVideoFrameCallback(videoFrameId)
+      cancelVideoLoop?.()
+      const context = canvas.getContext('2d')
+      if (context) clearCanvasBackingStore(context, canvas)
     }
-  }, [buffer, revision, showConfidence, videoRef])
+  }, [buffer, showConfidence, videoRef])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const context = canvas?.getContext('2d')
+    if (canvas && context) clearCanvasBackingStore(context, canvas)
+  }, [revision])
 
   return <canvas ref={canvasRef} className="tracking-canvas" aria-hidden="true" />
 }

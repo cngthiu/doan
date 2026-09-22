@@ -1,13 +1,15 @@
 import { NavLink, Outlet } from 'react-router-dom'
 
 import { useAuth } from '../../features/auth/AuthProvider'
+import type { UserRole } from '../../features/auth/types'
+import { roleLabels } from '../i18n/vi'
 
 const navigation = [
-  { label: 'Monitoring', to: '/', end: true },
-  { label: 'Phiên thi', to: '/sessions' },
-  { label: 'Thí sinh', to: '/candidates' },
-  { label: 'Sự kiện', to: '/events', disabled: true },
-  { label: 'Báo cáo', to: '/reports', disabled: true },
+  { label: 'Giám sát', to: '/', end: true, roles: ['SUPERVISOR', 'ADMIN'] as UserRole[] },
+  { label: 'Phiên thi', to: '/sessions', roles: ['SUPERVISOR', 'REVIEWER', 'ADMIN'] as UserRole[] },
+  { label: 'Thí sinh', to: '/candidates', roles: ['SUPERVISOR', 'REVIEWER', 'ADMIN'] as UserRole[] },
+  { label: 'Sự kiện', to: '/events', disabled: true, roles: ['REVIEWER', 'ADMIN'] as UserRole[] },
+  { label: 'Báo cáo', to: '/reports', disabled: true, roles: ['ADMIN'] as UserRole[] },
 ]
 
 export function AppShell() {
@@ -20,17 +22,14 @@ export function AppShell() {
           <span className="brand-badge small">E</span>
           <div>
             <strong>ExamGuard</strong>
-            <small>Surveillance system</small>
+            <small>Hệ thống giám sát</small>
           </div>
         </div>
         <nav aria-label="Điều hướng chính">
-          {navigation.map((item) => (
-            <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''} ${item.disabled ? 'disabled' : ''}`}>
-              {item.label}{item.disabled && <small>Phase sau</small>}
-            </NavLink>
-          ))}
-          <span className="nav-section">Cài đặt</span>
-          <NavLink to="/settings/rooms" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>Phòng thi</NavLink>
+          {navigation.filter((item) => user && item.roles.includes(user.role)).map((item) => item.disabled
+            ? <span key={item.to} className="nav-item disabled">{item.label}<small>Sắp có</small></span>
+            : <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>{item.label}</NavLink>)}
+          {user?.role === 'ADMIN' && <><span className="nav-section">Cài đặt</span><NavLink to="/settings/rooms" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>Phòng thi</NavLink></>}
         </nav>
       </aside>
       <main className="workspace">
@@ -41,7 +40,7 @@ export function AppShell() {
           </div>
           <div className="account-block">
             <span>{user?.full_name ?? user?.username}</span>
-            <small>{user?.role}</small>
+            <small>{user ? roleLabels[user.role] : ''}</small>
             <button type="button" onClick={logout}>Đăng xuất</button>
           </div>
         </header>

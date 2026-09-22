@@ -10,6 +10,7 @@ import torch
 from app.ai.detector.yolo import PersonDetector
 from app.ai.domain import Detection, normalize_bbox
 from app.ai.tracker.bytetrack import ByteTrackAdapter
+from app.cli.render_tracking_artifact import nearest_row
 from app.monitoring.config import (
     ByteTrackConfig,
     DetectorConfig,
@@ -76,17 +77,32 @@ def test_bbox_normalization_clamps_coordinates() -> None:
         normalize_bbox((0, 0, 1, 1), 0, 100)
 
 
+def test_tracking_artifact_selects_one_nearest_frame_with_tolerance() -> None:
+    rows = [{"timestamp_ms": "100"}, {"timestamp_ms": "180"}, {"timestamp_ms": "260"}]
+    assert nearest_row(rows, 210, 40)["timestamp_ms"] == "180"
+    with pytest.raises(ValueError, match="within the requested tolerance"):
+        nearest_row(rows, 400, 40)
+
+
 def test_bytetrack_adapter_extracts_ids_handles_empty_and_resets() -> None:
     tracker = ByteTrackAdapter(tracker_config())
+    instance_id = tracker.instance_id
     detection = Detection((10, 10, 40, 80), 0.9, 0)
-    first = tracker.update([detection], (100, 100))
+    first = tracker.update([detection], (100, 100), 40)
     assert len(first) == 1
     assert first[0].track_id == 1
     assert first[0].bbox_xyxy == pytest.approx((10, 10, 40, 80))
-    assert tracker.update([], (100, 100)) == []
+    assert [(event.event, event.track_id) for event in tracker.drain_lifecycle_events()] == [
+        ("TRACK_CREATED", 1)
+    ]
+    assert tracker.update([], (100, 100), 80) == []
+    assert tracker.drain_lifecycle_events()[0].event == "TRACK_LOST"
+    with pytest.raises(ValueError, match="timestamp must increase"):
+        tracker.update([detection], (100, 100), 80)
     tracker.reset()
-    reset = tracker.update([detection], (100, 100))
+    reset = tracker.update([detection], (100, 100), 20)
     assert reset[0].track_id == 1
+    assert tracker.instance_id == instance_id
 
 
 def test_runtime_profiles_match_phase_four_contract() -> None:
@@ -95,9 +111,16 @@ def test_runtime_profiles_match_phase_four_contract() -> None:
     gtx = load_runtime_profile(settings)
     rtx = load_runtime_profile(settings, "rtx3060")
     assert gtx.analysis.target_fps == 12.5
+    assert gtx.analysis.minimum_fps == 10.0
     assert gtx.analysis.queue_size == 1
     assert gtx.analysis.drop_stale_frames is True
-    assert gtx.tracker.track_buffer == 20
+    assert gtx.tracker.track_buffer == 30
+    assert gtx.detector.iou == 0.50
+    assert gtx.detector.max_det == 64
+    assert gtx.tracker.new_track_thresh == 0.50
+    assert gtx.tracking_debug.enabled is False
+    assert gtx.ui.tracking_interpolation is False
+    assert gtx.ui.tracking_smoothing is False
     assert rtx.analysis.target_fps == 18
     assert rtx.tracker.track_buffer == 30
     assert gtx.detector.model == Path("/models/detection/yolo11n.pt")

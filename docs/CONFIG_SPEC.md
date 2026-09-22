@@ -26,23 +26,23 @@ video:
   drop_stale_analysis_frames: true
 analysis:
   target_fps: 12.5
-  minimum_fps: 8.0
+  minimum_fps: 10.0
   queue_size: 1
 detector:
   model: /models/detection/yolo11n.pt
   imgsz: 640
   conf: 0.10
-  iou: 0.70
+  iou: 0.50
   classes: [0]
-  max_det: 32
+  max_det: 64
   half: true
 tracker:
   config: /app/configs/tracking/bytetrack_exam.yaml
 diagnostics:
   publish_hz: 2
 ui:
-  tracking_interpolation: true
-  tracking_smoothing: true
+  tracking_interpolation: false
+  tracking_smoothing: false
   show_confidence_default: false
 ```
 
@@ -63,7 +63,7 @@ detector:
   model: /models/detection/yolo11n.pt
   imgsz: 640
   conf: 0.10
-  iou: 0.70
+  iou: 0.50
   classes: [0]
   max_det: 32
   half: true
@@ -72,8 +72,8 @@ tracker:
 diagnostics:
   publish_hz: 2
 ui:
-  tracking_interpolation: true
-  tracking_smoothing: true
+  tracking_interpolation: false
+  tracking_smoothing: false
   show_confidence_default: false
 ```
 
@@ -84,8 +84,8 @@ Do not automatically use a larger YOLO model on RTX3060. Benchmark first.
 tracker_type: bytetrack
 track_high_thresh: 0.25
 track_low_thresh: 0.10
-new_track_thresh: 0.25
-track_buffer: 20
+new_track_thresh: 0.50
+track_buffer: 30
 match_thresh: 0.80
 fuse_score: true
 ```
@@ -95,10 +95,14 @@ fuse_score: true
 tracker_type: bytetrack
 track_high_thresh: 0.25
 track_low_thresh: 0.10
-new_track_thresh: 0.25
+new_track_thresh: 0.50
 track_buffer: 30
 match_thresh: 0.80
 fuse_score: true
 ```
 
 At monitoring start, log active profile, detector model/config, tracker config and source metadata. Invalid config must fail fast. Do not silently fall back to CPU unless configured.
+
+The stabilized `iou` and `new_track_thresh` values were selected from single-variable ablations
+on representative exam-room footage. Keep `conf=0.10` and `track_low_thresh=0.10` so ByteTrack
+can still associate partially occluded people; do not raise either value merely to reduce ID counts.

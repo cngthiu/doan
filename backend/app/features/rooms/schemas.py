@@ -18,6 +18,13 @@ def normalize_name(value: str) -> str:
     return normalized
 
 
+def normalize_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 class RoomCreate(BaseModel):
     code: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=255)
@@ -26,6 +33,7 @@ class RoomCreate(BaseModel):
 
     _normalize_code = field_validator("code")(normalize_code)
     _normalize_name = field_validator("name")(normalize_name)
+    _normalize_description = field_validator("description")(normalize_optional)
 
 
 class RoomUpdate(BaseModel):
@@ -36,6 +44,7 @@ class RoomUpdate(BaseModel):
 
     _normalize_code = field_validator("code")(normalize_code)
     _normalize_name = field_validator("name")(normalize_name)
+    _normalize_description = field_validator("description")(normalize_optional)
 
     @model_validator(mode="after")
     def require_change(self) -> "RoomUpdate":

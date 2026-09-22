@@ -35,6 +35,7 @@ export interface ExamSession {
     room_selected: boolean
     room_active: boolean
     seat_layout_available: boolean
+    active_seats: number
     candidates_assigned: number
     video_configured: boolean
     monitoring_status: 'NOT_STARTED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'ERROR' | 'CANCELLED'

@@ -1,13 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 
+import { formatDurationMs } from '../../shared/formatters'
+
 export function formatVideoTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '00:00'
-  const rounded = Math.floor(seconds)
-  const hours = Math.floor(rounded / 3600)
-  const minutes = Math.floor((rounded % 3600) / 60)
-  const remaining = rounded % 60
-  const base = `${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`
-  return hours ? `${String(hours).padStart(2, '0')}:${base}` : base
+  return formatDurationMs(seconds * 1000)
 }
 
 interface VideoPlayerProps {

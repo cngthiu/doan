@@ -10,17 +10,26 @@ from app.features.candidates.service import (
     list_candidates,
     update_candidate,
 )
+from app.shared.pagination import Page
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 
-@router.get("", response_model=list[CandidateResponse])
+@router.get("", response_model=Page[CandidateResponse])
 def get_candidates(
     _: CurrentUser,
     db: DatabaseSession,
     q: str | None = Query(default=None, max_length=255),
-) -> list[CandidateResponse]:
-    return [CandidateResponse.model_validate(item) for item in list_candidates(db, q)]
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> Page[CandidateResponse]:
+    candidates, total = list_candidates(db, q, page, page_size)
+    return Page(
+        items=[CandidateResponse.model_validate(item) for item in candidates],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.post("", response_model=CandidateResponse, status_code=status.HTTP_201_CREATED)

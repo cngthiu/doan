@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,7 +23,12 @@ def candidate_or_error(db: Session, candidate_id: uuid.UUID) -> Candidate:
     return candidate
 
 
-def list_candidates(db: Session, query: str | None = None) -> list[Candidate]:
+def list_candidates(
+    db: Session,
+    query: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[Candidate], int]:
     statement = select(Candidate)
     if query and (term := query.strip()):
         pattern = f"%{term}%"
@@ -34,7 +39,17 @@ def list_candidates(db: Session, query: str | None = None) -> list[Candidate]:
                 Candidate.class_name.ilike(pattern),
             )
         )
-    return list(db.scalars(statement.order_by(Candidate.candidate_code)))
+    total = db.scalar(
+        select(func.count()).select_from(statement.order_by(None).subquery())
+    ) or 0
+    items = list(
+        db.scalars(
+            statement.order_by(Candidate.candidate_code)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return items, total
 
 
 def create_candidate(db: Session, payload: CandidateCreate, actor: User) -> Candidate:
@@ -43,6 +58,7 @@ def create_candidate(db: Session, payload: CandidateCreate, actor: User) -> Cand
             status.HTTP_409_CONFLICT,
             "CANDIDATE_CODE_EXISTS",
             "Candidate code already exists",
+            field_name="candidate_code",
         )
     candidate = Candidate(**payload.model_dump())
     db.add(candidate)
@@ -63,6 +79,7 @@ def create_candidate(db: Session, payload: CandidateCreate, actor: User) -> Cand
             status.HTTP_409_CONFLICT,
             "CANDIDATE_CODE_EXISTS",
             "Candidate code already exists",
+            field_name="candidate_code",
         ) from error
     db.refresh(candidate)
     return candidate
@@ -87,6 +104,7 @@ def update_candidate(
             status.HTTP_409_CONFLICT,
             "CANDIDATE_CODE_EXISTS",
             "Candidate code already exists",
+            field_name="candidate_code",
         )
     for field, value in changes.items():
         setattr(candidate, field, value)
@@ -110,6 +128,7 @@ def update_candidate(
             status.HTTP_409_CONFLICT,
             "CANDIDATE_CODE_EXISTS",
             "Candidate code already exists",
+            field_name="candidate_code",
         ) from error
     db.refresh(candidate)
     return candidate

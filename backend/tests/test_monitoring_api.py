@@ -65,10 +65,15 @@ class FakeRuntimeManager:
 
     def subscribe(self, session_id: uuid.UUID) -> Subscriber:
         subscriber = self.publisher.subscribe()
+        runtime_instance_id = uuid.uuid4()
         self.publisher.publish(
             {
                 "type": "tracking",
                 "session_id": str(session_id),
+                "runtime_instance_id": str(runtime_instance_id),
+                "runtime_generation": 0,
+                "tracker_instance_id": str(uuid.uuid4()),
+                "tracking_seq": 1,
                 "timestamp_ms": 1200,
                 "frame_id": 30,
                 "source_width": 1920,
@@ -206,6 +211,15 @@ def test_diagnostics_schema_rejects_fabricated_invalid_ranges() -> None:
     payload: dict[str, Any] = {
         "type": "diagnostics",
         "session_id": str(uuid.uuid4()),
+        "runtime_instance_id": str(uuid.uuid4()),
+        "runtime_generation": 0,
+        "worker_instance_id": str(uuid.uuid4()),
+        "tracker_instance_id": str(uuid.uuid4()),
+        "tracking_seq": 4,
+        "latest_frame_id": 30,
+        "latest_timestamp_ms": 1200,
+        "raw_detection_count": 6,
+        "active_track_count": 6,
         "source_fps": 25,
         "target_analysis_fps": 12.5,
         "analysis_fps": 11.8,

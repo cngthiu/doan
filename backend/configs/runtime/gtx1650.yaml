@@ -6,7 +6,7 @@ runtime:
 
 analysis:
   target_fps: 12.5
-  minimum_fps: 8.0
+  minimum_fps: 10.0
   queue_size: 1
   drop_stale_frames: true
 
@@ -14,13 +14,23 @@ detector:
   model: /models/detection/yolo11n.pt
   imgsz: 640
   conf: 0.10
-  iou: 0.70
+  iou: 0.50
   classes: [0]
-  max_det: 32
+  max_det: 64
   half: true
 
 tracker:
   config: /app/configs/tracking/bytetrack_exam.yaml
 
 diagnostics:
+  enabled: true
   publish_hz: 2
+
+tracking_debug:
+  enabled: false
+  log_every_n_frames: 10
+  suspicious_iou_threshold: 0.50
+
+ui:
+  tracking_interpolation: false
+  tracking_smoothing: false

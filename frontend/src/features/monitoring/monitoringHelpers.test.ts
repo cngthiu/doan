@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
 import { containedVideoRect, mapNormalizedBox } from './geometry'
+import { clearCanvasBackingStore, startTrackingRenderLoop } from './TrackingCanvas'
 import { isTrackingTimestampAligned, TrackingBuffer } from './trackingBuffer'
 import type { TrackingFrame } from './types'
 import { monitoringSocketUrl, reconnectDelay, shouldReconnect } from './useMonitoringSocket'
 
-function frame(timestamp_ms: number): TrackingFrame {
-  return { type: 'tracking', session_id: 'session', timestamp_ms, frame_id: timestamp_ms, source_width: 1920, source_height: 1080, tracks: [] }
+function frame(
+  timestamp_ms: number,
+  tracking_seq = Math.floor(timestamp_ms / 100) + 1,
+  runtime_instance_id = 'runtime-a',
+  runtime_generation = 0,
+): TrackingFrame {
+  return {
+    type: 'tracking', session_id: 'session', runtime_instance_id, runtime_generation,
+    tracker_instance_id: 'tracker-a', tracking_seq, timestamp_ms, frame_id: timestamp_ms,
+    source_width: 1920, source_height: 1080, tracks: [],
+  }
 }
 
 describe('tracking overlay helpers', () => {
@@ -25,10 +35,58 @@ describe('tracking overlay helpers', () => {
     expect(buffer.size).toBe(3)
     expect(buffer.nearest(1510)?.timestamp_ms).toBe(1500)
     expect(buffer.nearest(2600)).toBeNull()
-    buffer.clear()
+    buffer.reset()
     expect(buffer.size).toBe(0)
     expect(isTrackingTimestampAligned(5100, 5000)).toBe(true)
     expect(isTrackingTimestampAligned(1000, 5000)).toBe(false)
+  })
+
+  it('rejects duplicate sequences and stale runtime generations', () => {
+    const buffer = new TrackingBuffer()
+    expect(buffer.insert(frame(100, 1)).accepted).toBe(true)
+    expect(buffer.insert(frame(110, 1)).accepted).toBe(false)
+    expect(buffer.insert(frame(5000, 1, 'runtime-a', 1))).toEqual({ accepted: true, reset: true })
+    expect(buffer.insert(frame(120, 2, 'runtime-a', 0)).accepted).toBe(false)
+    expect(buffer.insert(frame(200, 1, 'runtime-b', 0))).toEqual({ accepted: true, reset: true })
+    expect(buffer.insert(frame(5100, 2, 'runtime-a', 1)).accepted).toBe(false)
+    expect(buffer.nearest(200)?.runtime_instance_id).toBe('runtime-b')
+  })
+
+  it('clears the complete device-pixel backing store before drawing', () => {
+    const calls: Array<[string, ...number[]]> = []
+    const context = {
+      setTransform: (...values: number[]) => calls.push(['transform', ...values]),
+      clearRect: (...values: number[]) => calls.push(['clear', ...values]),
+    }
+    clearCanvasBackingStore(context, { width: 2000, height: 1200 })
+    expect(calls).toEqual([
+      ['transform', 1, 0, 0, 1, 0, 0],
+      ['clear', 0, 0, 2000, 1200],
+    ])
+  })
+
+  it('runs one video-frame callback chain and cancels it during cleanup', () => {
+    const callbacks = new Map<number, () => void>()
+    const cancelled: number[] = []
+    let nextId = 0
+    let draws = 0
+    const video = {
+      requestVideoFrameCallback(callback: () => void) {
+        nextId += 1
+        callbacks.set(nextId, callback)
+        return nextId
+      },
+      cancelVideoFrameCallback(callbackId: number) { cancelled.push(callbackId) },
+    }
+    const cleanup = startTrackingRenderLoop(video, () => { draws += 1 })
+    expect(callbacks.size).toBe(1)
+    callbacks.get(1)?.()
+    expect(draws).toBe(1)
+    expect(callbacks.size).toBe(2)
+    cleanup()
+    callbacks.get(2)?.()
+    expect(draws).toBe(1)
+    expect(cancelled).toEqual([2])
   })
 
   it('builds secure websocket URLs and caps reconnect backoff', () => {

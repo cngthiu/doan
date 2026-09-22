@@ -37,19 +37,25 @@ export function useMonitoringSocket({ sessionId, enabled, onMessage }: SocketOpt
     let disposed = false
     const connect = () => {
       if (disposed) return
-      socket = new WebSocket(monitoringSocketUrl(sessionId))
-      socket.onopen = () => { attempt = 0; setConnected(true) }
-      socket.onmessage = (event) => {
+      const currentSocket = new WebSocket(monitoringSocketUrl(sessionId))
+      socket = currentSocket
+      currentSocket.onopen = () => {
+        if (disposed) { currentSocket.close(); return }
+        attempt = 0; setConnected(true)
+      }
+      currentSocket.onmessage = (event) => {
+        if (disposed) return
         try {
           callbackRef.current(JSON.parse(event.data as string) as MonitoringMessage)
         } catch {
           // A later valid latest-state message supersedes malformed transport data.
         }
       }
-      socket.onerror = () => socket?.close()
-      socket.onclose = (event) => {
+      currentSocket.onerror = () => currentSocket.close()
+      currentSocket.onclose = (event) => {
+        if (disposed) return
         setConnected(false)
-        if (!disposed && shouldReconnect(event.code)) {
+        if (shouldReconnect(event.code)) {
           retryTimer = window.setTimeout(connect, reconnectDelay(attempt))
           attempt += 1
         }
@@ -59,7 +65,13 @@ export function useMonitoringSocket({ sessionId, enabled, onMessage }: SocketOpt
     return () => {
       disposed = true
       window.clearTimeout(retryTimer)
-      socket?.close()
+      if (socket) {
+        socket.onopen = null
+        socket.onmessage = null
+        socket.onerror = null
+        socket.onclose = null
+        socket.close()
+      }
     }
   }, [enabled, sessionId])
   return connected

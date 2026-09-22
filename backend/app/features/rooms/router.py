@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
 from app.features.auth.dependencies import AdminUser, CurrentUser, DatabaseSession
 from app.features.rooms.schemas import (
@@ -18,13 +18,26 @@ from app.features.rooms.service import (
     room_or_error,
     update_room,
 )
+from app.shared.pagination import Page
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
 
-@router.get("", response_model=list[RoomResponse])
-def get_rooms(_: CurrentUser, db: DatabaseSession) -> list[RoomResponse]:
-    return [RoomResponse.model_validate(room) for room in list_rooms(db)]
+@router.get("", response_model=Page[RoomResponse])
+def get_rooms(
+    _: CurrentUser,
+    db: DatabaseSession,
+    q: str | None = Query(default=None, max_length=255),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> Page[RoomResponse]:
+    rooms, total = list_rooms(db, q, page, page_size)
+    return Page(
+        items=[RoomResponse.model_validate(room) for room in rooms],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.post("", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)

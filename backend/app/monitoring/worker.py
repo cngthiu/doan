@@ -10,7 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from app.ai.detector.yolo import PersonDetector
-from app.ai.domain import RuntimeDiagnostics, Track, TrackingFrame, normalize_bbox
+from app.ai.domain import (
+    Detection,
+    RuntimeDiagnostics,
+    Track,
+    TrackedObject,
+    TrackingFrame,
+    normalize_bbox,
+    suspicious_detection_overlaps,
+)
 from app.ai.tracker.bytetrack import ByteTrackAdapter
 from app.monitoring.buffer import LatestValueBuffer
 from app.monitoring.clock import AnalysisClock
@@ -36,8 +44,11 @@ class VideoAnalysisWorker:
         detector_factory: Callable[[Any], PersonDetector] = PersonDetector,
         tracker_factory: Callable[[Any], ByteTrackAdapter] = ByteTrackAdapter,
         decoder_factory: Callable[[Path], VideoDecoder] = VideoDecoder,
+        runtime_instance_id: uuid.UUID | None = None,
     ) -> None:
         self.session_id = session_id
+        self.runtime_instance_id = runtime_instance_id or uuid.uuid4()
+        self.worker_instance_id = uuid.uuid4()
         self.video_path = video_path
         self.profile = profile
         self.clock = AnalysisClock(start_timestamp_ms)
@@ -55,18 +66,22 @@ class VideoAnalysisWorker:
         self._command_lock = threading.Lock()
         self._pending_seek: tuple[int, int] | None = (start_timestamp_ms, 0)
         self._generation = 0
+        self._tracking_seq = 0
         self._threads: list[threading.Thread] = []
         self._finish_lock = threading.Lock()
         self._finished = False
         self._intentional_stop = False
         self._decoder_drops = 0
+        self._out_of_order_drops = 0
         self.source_fps = 0.0
 
     def start(self) -> None:
         logger.info(
-            "Starting monitoring runtime session=%s profile=%s device=%s model=%s "
-            "detector=%s tracker=%s",
+            "Starting monitoring runtime session=%s runtime_instance=%s worker_instance=%s "
+            "profile=%s device=%s model=%s detector=%s tracker=%s",
             self.session_id,
+            self.runtime_instance_id,
+            self.worker_instance_id,
             self.profile.profile,
             self.profile.device,
             self.profile.detector.model,
@@ -86,8 +101,6 @@ class VideoAnalysisWorker:
         self._buffer.clear()
 
     def resume(self, timestamp_ms: int | None = None) -> None:
-        if timestamp_ms is not None:
-            self.seek(timestamp_ms)
         self.clock.resume(timestamp_ms)
         self._paused.clear()
 
@@ -96,6 +109,7 @@ class VideoAnalysisWorker:
             raise ValueError("timestamp_ms must be non-negative")
         with self._command_lock:
             self._generation += 1
+            self._tracking_seq = 0
             self._pending_seek = (timestamp_ms, self._generation)
             self.clock.seek(timestamp_ms)
         self._buffer.clear()
@@ -118,11 +132,21 @@ class VideoAnalysisWorker:
 
     @property
     def dropped_analysis_frames(self) -> int:
-        return self._buffer.dropped + self._decoder_drops
+        return self._buffer.dropped + self._decoder_drops + self._out_of_order_drops
 
     @property
     def alive(self) -> bool:
         return any(thread.is_alive() for thread in self._threads)
+
+    @property
+    def runtime_generation(self) -> int:
+        with self._command_lock:
+            return self._generation
+
+    @property
+    def tracking_seq(self) -> int:
+        with self._command_lock:
+            return self._tracking_seq
 
     def _take_seek(self) -> tuple[tuple[int, int] | None, int]:
         with self._command_lock:
@@ -183,10 +207,12 @@ class VideoAnalysisWorker:
     def _analyze(self) -> None:
         completions: deque[float] = deque()
         last_diagnostics = 0.0
-        last_generation = -1
+        last_generation: int | None = None
+        last_tracking_timestamp_ms: int | None = None
         try:
             detector = self._detector_factory(self.profile.detector)
             tracker = self._tracker_factory(self.profile.tracker)
+            tracker_instance_id = getattr(tracker, "instance_id", uuid.uuid4())
             if self._stop.is_set():
                 return
             self._on_ready()
@@ -200,15 +226,41 @@ class VideoAnalysisWorker:
                         self._finish(complete=True)
                         return
                     continue
-                if packet.generation != last_generation:
+                if last_generation is None:
+                    last_generation = packet.generation
+                elif packet.generation != last_generation:
                     tracker.reset()
                     last_generation = packet.generation
+                    last_tracking_timestamp_ms = None
+                if (
+                    last_tracking_timestamp_ms is not None
+                    and packet.timestamp_ms <= last_tracking_timestamp_ms
+                ):
+                    self._out_of_order_drops += 1
+                    if self.profile.tracking_debug.enabled:
+                        logger.warning(
+                            "tracking_stale_drop session=%s runtime_instance=%s "
+                            "runtime_generation=%s frame=%s timestamp_ms=%s "
+                            "previous_timestamp_ms=%s",
+                            self.session_id,
+                            self.runtime_instance_id,
+                            packet.generation,
+                            packet.frame_id,
+                            packet.timestamp_ms,
+                            last_tracking_timestamp_ms,
+                        )
+                    continue
                 pipeline_started = time.perf_counter()
                 detector_started = time.perf_counter()
                 detections = detector.detect(packet.frame)
                 detector_ms = (time.perf_counter() - detector_started) * 1000
                 tracker_started = time.perf_counter()
-                tracked = tracker.update(detections, packet.frame.shape[:2])
+                tracked = tracker.update(
+                    detections,
+                    packet.frame.shape[:2],
+                    packet.timestamp_ms,
+                )
+                last_tracking_timestamp_ms = packet.timestamp_ms
                 tracker_ms = (time.perf_counter() - tracker_started) * 1000
                 if (
                     self._stop.is_set()
@@ -216,6 +268,11 @@ class VideoAnalysisWorker:
                     or not self._is_current_generation(packet.generation)
                 ):
                     continue
+                with self._command_lock:
+                    if packet.generation != self._generation:
+                        continue
+                    self._tracking_seq += 1
+                    tracking_seq = self._tracking_seq
                 tracks = tuple(
                     Track(
                         track_id=item.track_id,
@@ -230,6 +287,10 @@ class VideoAnalysisWorker:
                 )
                 frame = TrackingFrame(
                     session_id=self.session_id,
+                    runtime_instance_id=self.runtime_instance_id,
+                    runtime_generation=packet.generation,
+                    tracker_instance_id=tracker_instance_id,
+                    tracking_seq=tracking_seq,
                     frame_id=packet.frame_id,
                     timestamp_ms=packet.timestamp_ms,
                     source_width=packet.source_width,
@@ -237,6 +298,14 @@ class VideoAnalysisWorker:
                     tracks=tracks,
                 )
                 self._publish(frame.as_message())
+                self._log_tracking_debug(
+                    packet=packet,
+                    detections=detections,
+                    tracked=tracked,
+                    tracker=tracker,
+                    tracker_instance_id=tracker_instance_id,
+                    tracking_seq=tracking_seq,
+                )
                 completed_at = time.monotonic()
                 completions.append(completed_at)
                 while completions and completions[0] < completed_at - 2.0:
@@ -249,6 +318,15 @@ class VideoAnalysisWorker:
                     actual_fps = len(completions) / window
                     diagnostics = RuntimeDiagnostics(
                         session_id=self.session_id,
+                        runtime_instance_id=self.runtime_instance_id,
+                        runtime_generation=packet.generation,
+                        worker_instance_id=self.worker_instance_id,
+                        tracker_instance_id=tracker_instance_id,
+                        tracking_seq=tracking_seq,
+                        latest_frame_id=packet.frame_id,
+                        latest_timestamp_ms=packet.timestamp_ms,
+                        raw_detection_count=len(detections),
+                        active_track_count=len(tracked),
                         source_fps=self.source_fps,
                         target_analysis_fps=self.profile.analysis.target_fps,
                         analysis_fps=actual_fps,
@@ -270,6 +348,68 @@ class VideoAnalysisWorker:
                     last_diagnostics = completed_at
         except Exception as error:
             self._finish(error=f"AI pipeline failure: {error}")
+
+    def _log_tracking_debug(
+        self,
+        *,
+        packet: FramePacket,
+        detections: list[Detection],
+        tracked: list[TrackedObject],
+        tracker: Any,
+        tracker_instance_id: uuid.UUID,
+        tracking_seq: int,
+    ) -> None:
+        debug = self.profile.tracking_debug
+        lifecycle_events = getattr(tracker, "drain_lifecycle_events", lambda: ())()
+        if not debug.enabled:
+            return
+        periodic_frame = packet.frame_id % debug.log_every_n_frames == 0
+        for event in lifecycle_events:
+            if event.event == "TRACK_UPDATED" and not periodic_frame:
+                continue
+            logger.info(
+                "tracking_lifecycle session=%s runtime_instance=%s runtime_generation=%s "
+                "tracker_instance=%s timestamp_ms=%s event=%s track_id=%s",
+                self.session_id,
+                self.runtime_instance_id,
+                packet.generation,
+                tracker_instance_id,
+                packet.timestamp_ms,
+                event.event,
+                event.track_id,
+            )
+        if not periodic_frame:
+            return
+        detection_boxes = [
+            {
+                "bbox": tuple(round(value, 2) for value in detection.bbox_xyxy),
+                "confidence": round(detection.confidence, 4),
+                "class_id": detection.class_id,
+            }
+            for detection in detections
+        ]
+        suspicious_overlaps = suspicious_detection_overlaps(
+            detections,
+            debug.suspicious_iou_threshold,
+        )
+        logger.info(
+            "tracking_debug session=%s frame=%s timestamp_ms=%s tracking_seq=%s "
+            "detections=%s tracks=%s detection_boxes=%s suspicious_overlaps=%s track_ids=%s "
+            "runtime_instance=%s runtime_generation=%s worker_instance=%s tracker_instance=%s",
+            self.session_id,
+            packet.frame_id,
+            packet.timestamp_ms,
+            tracking_seq,
+            len(detections),
+            len(tracked),
+            detection_boxes,
+            suspicious_overlaps,
+            [item.track_id for item in tracked],
+            self.runtime_instance_id,
+            packet.generation,
+            self.worker_instance_id,
+            tracker_instance_id,
+        )
 
     def _finish(self, *, error: str | None = None, complete: bool = False) -> None:
         with self._finish_lock:

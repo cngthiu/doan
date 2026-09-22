@@ -47,6 +47,17 @@ class DiagnosticsConfig(BaseModel):
     publish_hz: float = Field(gt=0, le=10)
 
 
+class TrackingDebugConfig(BaseModel):
+    enabled: bool = False
+    log_every_n_frames: int = Field(default=10, gt=0)
+    suspicious_iou_threshold: float = Field(default=0.5, gt=0, le=1)
+
+
+class TrackingUiConfig(BaseModel):
+    tracking_interpolation: Literal[False] = False
+    tracking_smoothing: Literal[False] = False
+
+
 class RuntimeProfile(BaseModel):
     profile: Literal["gtx1650", "rtx3060"]
     device: str
@@ -55,6 +66,8 @@ class RuntimeProfile(BaseModel):
     detector: DetectorConfig
     tracker: ByteTrackConfig
     diagnostics: DiagnosticsConfig
+    tracking_debug: TrackingDebugConfig = Field(default_factory=TrackingDebugConfig)
+    ui: TrackingUiConfig = Field(default_factory=TrackingUiConfig)
 
 
 def _yaml_mapping(path: Path) -> dict[str, object]:
@@ -115,4 +128,6 @@ def load_runtime_profile_from_paths(
         detector=DetectorConfig.model_validate(detector_payload),
         tracker=ByteTrackConfig.model_validate(_yaml_mapping(tracker_path)),
         diagnostics=DiagnosticsConfig.model_validate(payload.get("diagnostics")),
+        tracking_debug=TrackingDebugConfig.model_validate(payload.get("tracking_debug") or {}),
+        ui=TrackingUiConfig.model_validate(payload.get("ui") or {}),
     )

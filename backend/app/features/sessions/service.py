@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,7 @@ from app.db.models.candidate import Candidate
 from app.db.models.media import MediaAsset
 from app.db.models.room import Room, Seat
 from app.db.models.session import ExamSession, ExamSessionStatus, SessionCandidate
-from app.db.models.user import User, UserRole
+from app.db.models.user import User
 from app.features.media.service import media_file_path, media_response
 from app.features.sessions.schemas import (
     CandidateSummary,
@@ -43,12 +43,18 @@ def session_or_error(db: Session, session_id: uuid.UUID) -> ExamSession:
 def _active_room_or_error(db: Session, room_id: uuid.UUID) -> Room:
     room = db.get(Room, room_id)
     if room is None:
-        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "ROOM_NOT_FOUND", "Room was not found")
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "ROOM_NOT_FOUND",
+            "Room was not found",
+            field_name="room_id",
+        )
     if not room.is_active:
         raise ApiError(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "ROOM_INACTIVE",
             "Inactive room cannot be selected",
+            field_name="room_id",
         )
     return room
 
@@ -59,6 +65,7 @@ def _validate_schedule(start: datetime | None, end: datetime | None) -> None:
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "INVALID_SCHEDULE",
             "Scheduled end must be after scheduled start",
+            field_name="scheduled_end",
         )
 
 
@@ -83,6 +90,7 @@ def _readiness(
         room_selected=True,
         room_active=room.is_active,
         seat_layout_available=seat_count > 0,
+        active_seats=seat_count,
         candidates_assigned=candidate_count,
         video_configured=video_asset_id is not None,
         monitoring_status=(
@@ -166,9 +174,37 @@ def session_response(db: Session, exam_session: ExamSession) -> SessionResponse:
     )
 
 
-def list_sessions(db: Session) -> list[SessionResponse]:
-    sessions = list(db.scalars(select(ExamSession).order_by(ExamSession.created_at.desc())))
-    return [session_response(db, item) for item in sessions]
+def list_sessions(
+    db: Session,
+    query: str | None = None,
+    session_status: ExamSessionStatus | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[SessionResponse], int]:
+    statement = select(ExamSession).join(Room, Room.id == ExamSession.room_id)
+    if query and (term := query.strip()):
+        pattern = f"%{term}%"
+        statement = statement.where(
+            or_(
+                ExamSession.session_code.ilike(pattern),
+                ExamSession.exam_name.ilike(pattern),
+                Room.code.ilike(pattern),
+                Room.name.ilike(pattern),
+            )
+        )
+    if session_status is not None:
+        statement = statement.where(ExamSession.status == session_status.value)
+    total = db.scalar(
+        select(func.count()).select_from(statement.order_by(None).subquery())
+    ) or 0
+    sessions = list(
+        db.scalars(
+            statement.order_by(ExamSession.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return [session_response(db, item) for item in sessions], total
 
 
 def create_session(db: Session, payload: SessionCreate, actor: User) -> SessionResponse:
@@ -177,6 +213,7 @@ def create_session(db: Session, payload: SessionCreate, actor: User) -> SessionR
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "INVALID_SESSION_STATE",
             "A session must be created in DRAFT state",
+            field_name="status",
         )
     _active_room_or_error(db, payload.room_id)
     if db.scalar(select(ExamSession.id).where(ExamSession.session_code == payload.session_code)):
@@ -184,6 +221,7 @@ def create_session(db: Session, payload: SessionCreate, actor: User) -> SessionR
             status.HTTP_409_CONFLICT,
             "SESSION_CODE_EXISTS",
             "Session code already exists",
+            field_name="session_code",
         )
     values = payload.model_dump()
     values["status"] = payload.status.value
@@ -209,6 +247,7 @@ def create_session(db: Session, payload: SessionCreate, actor: User) -> SessionR
             status.HTTP_409_CONFLICT,
             "SESSION_CODE_EXISTS",
             "Session code already exists",
+            field_name="session_code",
         ) from error
     db.refresh(exam_session)
     return session_response(db, exam_session)
@@ -223,11 +262,17 @@ def update_session(
 ) -> SessionResponse:
     exam_session = session_or_error(db, session_id)
     changes = payload.model_dump(exclude_unset=True)
-    if actor.role == UserRole.SUPERVISOR.value and set(changes) != {"video_asset_id"}:
+    current_status = ExamSessionStatus(exam_session.status)
+    desired_status = changes.get("status")
+    cancelling = desired_status in {
+        ExamSessionStatus.CANCELLED,
+        ExamSessionStatus.CANCELLED.value,
+    }
+    if current_status not in {ExamSessionStatus.DRAFT, ExamSessionStatus.READY}:
         raise ApiError(
-            status.HTTP_403_FORBIDDEN,
-            "FORBIDDEN",
-            "Supervisors may only change the source video",
+            status.HTTP_409_CONFLICT,
+            "INVALID_SESSION_STATE",
+            "A session can only be edited or cancelled before monitoring starts",
         )
     if "video_asset_id" in changes:
         if exam_session.status not in {
@@ -273,12 +318,28 @@ def update_session(
             status.HTTP_409_CONFLICT,
             "SESSION_CODE_EXISTS",
             "Session code already exists",
+            field_name="session_code",
         )
 
     room_id = changes.get("room_id", exam_session.room_id)
     if not isinstance(room_id, uuid.UUID):
-        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "ROOM_NOT_FOUND", "Room was not found")
-    room = _active_room_or_error(db, room_id)
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "ROOM_NOT_FOUND",
+            "Room was not found",
+            field_name="room_id",
+        )
+    if cancelling and set(changes) == {"status"}:
+        room = db.get(Room, room_id)
+        if room is None:
+            raise ApiError(
+                status.HTTP_409_CONFLICT,
+                "ROOM_NOT_FOUND",
+                "Session room was not found",
+                field_name="room_id",
+            )
+    else:
+        room = _active_room_or_error(db, room_id)
     if room_id != exam_session.room_id:
         assignment_count = db.scalar(
             select(func.count(SessionCandidate.id)).where(
@@ -290,18 +351,17 @@ def update_session(
                 status.HTTP_409_CONFLICT,
                 "SESSION_HAS_ASSIGNMENTS",
                 "Clear candidate assignments before changing the room",
+                field_name="room_id",
             )
 
     scheduled_start = changes.get("scheduled_start", exam_session.scheduled_start)
     scheduled_end = changes.get("scheduled_end", exam_session.scheduled_end)
     _validate_schedule(scheduled_start, scheduled_end)
 
-    desired_status = changes.get("status")
     if desired_status is not None:
         desired_status = ExamSessionStatus(desired_status)
-        current_status = ExamSessionStatus(exam_session.status)
         if desired_status != current_status:
-            valid_transition = (
+            valid_transition = desired_status == ExamSessionStatus.CANCELLED or (
                 current_status == ExamSessionStatus.DRAFT
                 and desired_status == ExamSessionStatus.READY
             )
@@ -309,21 +369,24 @@ def update_session(
                 raise ApiError(
                     status.HTTP_409_CONFLICT,
                     "INVALID_SESSION_STATE",
-                    "Phase 2 only supports the DRAFT to READY transition",
+                    "The requested session status transition is not allowed",
+                    field_name="status",
                 )
-            readiness = _readiness(
-                db,
-                exam_session,
-                room,
-                changes.get("video_asset_id", exam_session.video_asset_id),
-            )
-            if not readiness.can_mark_ready:
-                raise ApiError(
-                    status.HTTP_409_CONFLICT,
-                    "SESSION_NOT_READY",
-                    "Room, seat layout, candidate assignments, and video are required",
-                    readiness.model_dump(),
+            if desired_status == ExamSessionStatus.READY:
+                readiness = _readiness(
+                    db,
+                    exam_session,
+                    room,
+                    changes.get("video_asset_id", exam_session.video_asset_id),
                 )
+                if not readiness.can_mark_ready:
+                    raise ApiError(
+                        status.HTTP_409_CONFLICT,
+                        "SESSION_NOT_READY",
+                        "Room, seat layout, candidate assignments, and video are required",
+                        readiness.model_dump(),
+                        field_name="status",
+                    )
         changes["status"] = desired_status.value
 
     for field, value in changes.items():
@@ -333,7 +396,11 @@ def update_session(
         AuditService.record(
             db,
             actor=actor,
-            action=AuditAction.SESSION_UPDATED,
+            action=(
+                AuditAction.SESSION_CANCELLED
+                if changes.get("status") == ExamSessionStatus.CANCELLED.value
+                else AuditAction.SESSION_UPDATED
+            ),
             entity_type="EXAM_SESSION",
             entity_id=exam_session.id,
             metadata={
@@ -348,6 +415,7 @@ def update_session(
             status.HTTP_409_CONFLICT,
             "SESSION_CODE_EXISTS",
             "Session code already exists",
+            field_name="session_code",
         ) from error
     db.refresh(exam_session)
     return session_response(db, exam_session)

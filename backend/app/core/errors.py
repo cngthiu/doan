@@ -8,13 +8,15 @@ class ApiError(Exception):
     code: str
     message: str
     details: dict[str, Any] = field(default_factory=dict)
+    field_name: str | None = None
 
 
 def error_payload(error: ApiError) -> dict[str, object]:
-    return {
-        "error": {
-            "code": error.code,
-            "message": error.message,
-            "details": error.details,
-        }
+    payload: dict[str, object] = {
+        "code": error.code,
+        "message": error.message,
+        "details": error.details,
     }
+    if error.field_name is not None:
+        payload["field"] = error.field_name
+    return {"error": payload}

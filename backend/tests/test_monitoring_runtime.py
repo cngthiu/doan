@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 import uuid
@@ -10,7 +11,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from app.ai.domain import Detection, TrackedObject
+from app.ai.domain import Detection, RuntimeDiagnostics, TrackedObject
 from app.monitoring.buffer import LatestValueBuffer
 from app.monitoring.clock import AnalysisClock
 from app.monitoring.config import (
@@ -76,8 +77,10 @@ class FakeDecoder:
         next_frame = max(self.frame_id + 1, round(target_ms / 40))
         dropped = max(0, next_frame - self.frame_id - 1)
         self.frame_id = next_frame
+        frame = np.zeros((80, 100, 3), dtype=np.uint8)
+        frame[0, 0, 0] = next_frame % 256
         return FramePacket(
-            frame=np.zeros((80, 100, 3), dtype=np.uint8),
+            frame=frame,
             frame_id=next_frame,
             timestamp_ms=next_frame * 40,
             source_width=100,
@@ -92,17 +95,29 @@ class FakeDecoder:
 class FakeDetector:
     def __init__(self, _: object, delay: float = 0.0) -> None:
         self.delay = delay
+        self.calls = 0
+        self.frame_tokens: list[int] = []
 
-    def detect(self, _: np.ndarray) -> list[Detection]:
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        self.calls += 1
+        self.frame_tokens.append(int(frame[0, 0, 0]))
         time.sleep(self.delay)
         return [Detection((10, 10, 30, 70), 0.9, 0)]
 
 
 class FakeTracker:
     def __init__(self, _: object) -> None:
+        self.instance_id = uuid.uuid4()
         self.reset_count = 0
+        self.timestamps: list[int] = []
 
-    def update(self, _: list[Detection], __: tuple[int, int]) -> list[TrackedObject]:
+    def update(
+        self,
+        _: list[Detection],
+        __: tuple[int, int],
+        timestamp_ms: int,
+    ) -> list[TrackedObject]:
+        self.timestamps.append(timestamp_ms)
         return [TrackedObject(1, (10, 10, 30, 70), 0.9)]
 
     def reset(self) -> None:
@@ -114,11 +129,9 @@ class BlockingDetector(FakeDetector):
         super().__init__(config)
         self.entered = entered
         self.release = release
-        self.calls = 0
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        self.calls += 1
-        if self.calls == 1:
+        if self.calls == 0:
             self.entered.set()
             assert self.release.wait(1)
         return super().detect(frame)
@@ -138,6 +151,34 @@ class FiniteDecoder(FakeDecoder):
             return None, 0
         self.finished = True
         return super().read_for_timestamp(target_ms, generation)
+
+
+class OutOfOrderDecoder(FakeDecoder):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self._timestamps = iter((80, 40, 120))
+
+    def read_for_timestamp(
+        self,
+        target_ms: int,
+        generation: int,
+    ) -> tuple[FramePacket | None, int]:
+        try:
+            timestamp_ms = next(self._timestamps)
+        except StopIteration:
+            return None, 0
+        frame = np.zeros((80, 100, 3), dtype=np.uint8)
+        return (
+            FramePacket(
+                frame=frame,
+                frame_id=timestamp_ms,
+                timestamp_ms=timestamp_ms,
+                source_width=100,
+                source_height=80,
+                generation=generation,
+            ),
+            0,
+        )
 
 
 def test_latest_buffer_never_grows_and_drops_stale_values() -> None:
@@ -188,9 +229,49 @@ def test_websocket_publisher_removes_subscriber_with_closed_loop() -> None:
     assert publisher.subscriber_count == 0
 
 
+def test_runtime_diagnostics_message_is_json_serializable() -> None:
+    session_id = uuid.uuid4()
+    runtime_instance_id = uuid.uuid4()
+    worker_instance_id = uuid.uuid4()
+    tracker_instance_id = uuid.uuid4()
+    message = RuntimeDiagnostics(
+        session_id=session_id,
+        runtime_instance_id=runtime_instance_id,
+        runtime_generation=2,
+        worker_instance_id=worker_instance_id,
+        tracker_instance_id=tracker_instance_id,
+        tracking_seq=3,
+        latest_frame_id=4,
+        latest_timestamp_ms=160,
+        raw_detection_count=1,
+        active_track_count=1,
+        source_fps=25.0,
+        target_analysis_fps=12.5,
+        analysis_fps=12.0,
+        detector_ms=18.0,
+        tracker_ms=1.0,
+        pipeline_ms=19.0,
+        analysis_lag_ms=40.0,
+        gpu_util_pct=50.0,
+        vram_used_mb=512.0,
+        cpu_util_pct=25.0,
+        ram_used_mb=1024.0,
+        dropped_analysis_frames=0,
+        queue_size=0,
+        profile="gtx1650",
+    ).as_message()
+
+    json.dumps(message)
+    assert message["session_id"] == str(session_id)
+    assert message["runtime_instance_id"] == str(runtime_instance_id)
+    assert message["worker_instance_id"] == str(worker_instance_id)
+    assert message["tracker_instance_id"] == str(tracker_instance_id)
+
+
 def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
     messages: list[dict[str, Any]] = []
     ready = threading.Event()
+    detectors: list[FakeDetector] = []
     trackers: list[FakeTracker] = []
     decoders: list[FakeDecoder] = []
 
@@ -204,6 +285,11 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
         decoders.append(decoder)
         return decoder
 
+    def detector_factory(config: object) -> FakeDetector:
+        detector = FakeDetector(config, delay=0.12)
+        detectors.append(detector)
+        return detector
+
     worker = VideoAnalysisWorker(
         session_id=uuid.uuid4(),
         video_path=Path("video.mp4"),
@@ -213,7 +299,7 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
         on_ready=ready.set,
         on_complete=lambda: None,
         on_error=lambda error: (_ for _ in ()).throw(AssertionError(error)),
-        detector_factory=lambda config: FakeDetector(config, delay=0.12),
+        detector_factory=detector_factory,
         tracker_factory=tracker_factory,
         decoder_factory=decoder_factory,
     )
@@ -228,15 +314,29 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
     time.sleep(0.18)
     tracking_while_paused = len([item for item in messages if item["type"] == "tracking"])
     assert tracking_while_paused <= tracking_before_pause + 1
+    worker.resume(1000)
+    time.sleep(0.12)
+    assert trackers[0].reset_count == 0
+    worker.pause(1120)
     worker.seek(5000)
     worker.resume(5000)
     time.sleep(0.22)
     assert worker.stop() is True
     assert worker.alive is False
+    assert len(detectors) == 1
+    assert len(trackers) == 1
+    published_count = len([item for item in messages if item["type"] == "tracking"])
+    assert detectors[0].calls >= published_count
+    assert len(detectors[0].frame_tokens) == len(set(detectors[0].frame_tokens))
     assert decoders[0].released is True
-    assert trackers[0].reset_count >= 2
+    assert trackers[0].reset_count >= 1
     timestamps = [item["timestamp_ms"] for item in messages if item["type"] == "tracking"]
     assert any(timestamp >= 5000 for timestamp in timestamps)
+    tracking = [item for item in messages if item["type"] == "tracking"]
+    assert len({item["runtime_instance_id"] for item in tracking}) == 1
+    assert len({item["tracker_instance_id"] for item in tracking}) == 1
+    post_seek = [item for item in tracking if item["runtime_generation"] == 1]
+    assert post_seek and post_seek[0]["tracking_seq"] == 1
 
 
 def test_worker_discards_inflight_result_from_before_seek() -> None:
@@ -269,6 +369,45 @@ def test_worker_discards_inflight_result_from_before_seek() -> None:
     tracking = [item for item in messages if item["type"] == "tracking"]
     assert tracking
     assert all(item["timestamp_ms"] >= 5000 for item in tracking)
+
+
+def test_worker_drops_non_increasing_tracker_input_before_inference() -> None:
+    messages: list[dict[str, Any]] = []
+    completed = threading.Event()
+    detectors: list[FakeDetector] = []
+    trackers: list[FakeTracker] = []
+
+    def detector_factory(config: object) -> FakeDetector:
+        detector = FakeDetector(config)
+        detectors.append(detector)
+        return detector
+
+    def tracker_factory(config: object) -> FakeTracker:
+        tracker = FakeTracker(config)
+        trackers.append(tracker)
+        return tracker
+
+    worker = VideoAnalysisWorker(
+        session_id=uuid.uuid4(),
+        video_path=Path("video.mp4"),
+        profile=profile(),
+        start_timestamp_ms=0,
+        publish=messages.append,
+        on_ready=lambda: None,
+        on_complete=completed.set,
+        on_error=lambda error: (_ for _ in ()).throw(AssertionError(error)),
+        detector_factory=detector_factory,
+        tracker_factory=tracker_factory,
+        decoder_factory=OutOfOrderDecoder,
+    )
+    worker.start()
+    assert completed.wait(1)
+    assert worker.stop() is True
+    assert detectors[0].calls == 2
+    assert trackers[0].timestamps == [80, 120]
+    assert worker.dropped_analysis_frames >= 1
+    tracking = [item for item in messages if item["type"] == "tracking"]
+    assert [item["timestamp_ms"] for item in tracking] == [80, 120]
 
 
 def test_worker_completes_after_analyzing_final_frame_and_releasing_decoder() -> None:
@@ -337,3 +476,58 @@ def test_terminal_state_is_not_overwritten_by_late_worker_readiness(
     result = manager.start(session_id, Path("video.mp4"), profile(), 0)
     assert result["state"] == RuntimeState.COMPLETED.value
     assert terminal_states == [RuntimeState.COMPLETED]
+
+
+def test_manager_rejects_duplicate_start_and_ignores_replaced_worker_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.monitoring.manager.PersonDetector.validate_environment",
+        lambda _: None,
+    )
+    workers: list[Any] = []
+
+    class ControlledWorker:
+        queue_size = 0
+        dropped_analysis_frames = 0
+        runtime_generation = 0
+        tracking_seq = 0
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.worker_instance_id = uuid.uuid4()
+            self.runtime_instance_id = kwargs["runtime_instance_id"]
+            self.publish = kwargs["publish"]
+            self.on_ready = kwargs["on_ready"]
+            self.on_complete = kwargs["on_complete"]
+            self.on_error = kwargs["on_error"]
+            workers.append(self)
+
+        def start(self) -> None:
+            self.on_ready()
+
+        def stop(self, timeout: float = 5.0) -> bool:
+            return True
+
+    manager = MonitoringRuntimeManager(worker_factory=ControlledWorker)  # type: ignore[arg-type]
+    session_id = uuid.uuid4()
+    assert manager.start(session_id, Path("video.mp4"), profile(), 0)["state"] == "RUNNING"
+    with pytest.raises(RuntimeError, match="đã hoạt động"):
+        manager.start(session_id, Path("video.mp4"), profile(), 0)
+
+    assert manager.stop(session_id)["state"] == "COMPLETED"
+    first = workers[0]
+    second_status = manager.start(session_id, Path("video.mp4"), profile(), 0)
+    assert second_status["state"] == "RUNNING"
+    assert second_status["runtime_instance_id"] != str(first.runtime_instance_id)
+
+    first.publish(
+        {
+            "type": "tracking",
+            "runtime_generation": 0,
+            "tracking_seq": 999,
+        }
+    )
+    first.on_error("late failure")
+    current = manager.status(session_id)
+    assert current["state"] == "RUNNING"
+    assert current["tracking_seq"] == 0

@@ -14,7 +14,7 @@ detector:
   model: /models/detection/yolo11n.pt
   imgsz: 640
   conf: 0.10
-  iou: 0.70
+  iou: 0.50
   classes: [0]
   max_det: 32
   half: true
@@ -24,3 +24,12 @@ tracker:
 
 diagnostics:
   publish_hz: 2
+
+tracking_debug:
+  enabled: false
+  log_every_n_frames: 10
+  suspicious_iou_threshold: 0.50
+
+ui:
+  tracking_interpolation: false
+  tracking_smoothing: false
