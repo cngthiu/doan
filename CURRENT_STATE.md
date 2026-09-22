@@ -41,10 +41,11 @@ permissions, validation, and monitoring behavior are unchanged.
 - Frontend unit tests, TypeScript checks and production build pass.
 - Backend Ruff passes.
 - Alembic remains at the single initial-schema head; Phase 5.5 requires no schema migration.
-- Backend mypy passes for 75 source files.
-- The 20 targeted detector/tracker/runtime tests pass. The full backend suite was
-  not completed in this host environment: the Docker daemon is unavailable and
-  the temporary host CPython build lacks its native SQLite module.
+- Backend mypy passed for the 76 source files present before the RBAC user-management
+  additions; the expanded backend still requires a fresh container mypy run.
+- The 20 targeted detector/tracker/runtime tests from the prior tracking gate pass.
+  The full backend suite has not been rerun for the expanded RBAC tree because
+  volume-backed Docker execution is blocked by the current approval service.
 - No database volume reset or environment-file change was performed.
 
 ## Tracking Validation and Benchmark Gate
@@ -79,6 +80,66 @@ TRACKING STATUS: PASSED ON THE AVAILABLE MINI VALIDATION SET
   claim.
 - Full evidence, ablations, metrics, commands, and blockers are in
   `docs/TRACKING_VALIDATION_REPORT.md`.
+
+## RBAC
+
+```text
+RBAC STATUS: NOT PASSED
+RBAC UI STATUS: PASSED
+RBAC USER MANAGEMENT: IMPLEMENTED, BACKEND TEST EXECUTION PENDING
+```
+
+- Fixed permissions are centralized for the existing `ADMIN`, `SUPERVISOR`, and
+  `REVIEWER` roles. No role/permission tables or database migration were added.
+- All implemented room, candidate, session, media, monitoring, and tracking
+  WebSocket routes now enforce named permissions after authentication.
+- The backend returns `403` with code `FORBIDDEN` for authenticated users who
+  lack a required permission. Inactive-user and existing business-state checks
+  remain authoritative.
+- Frontend routes, role landing pages, sidebar navigation, editing controls,
+  media upload, monitoring controls, and development diagnostics use the
+  centralized permission map. Forbidden direct routes show an explicit
+  Vietnamese `403` state without redirecting an authenticated user to Login.
+- The ADMIN landing page has a compact operational overview backed by real
+  session and active-user counts. SUPERVISOR lands on Monitoring; REVIEWER lands
+  on the implemented read-only Sessions page because Event Review is not yet present.
+- Navigation exposes only implemented routes. The top navbar localizes the role
+  and provides account details plus logout without exposing raw permissions.
+- ADMIN now has `Cài đặt → Người dùng` backed by real `/api/v1/users` endpoints:
+  paginated search/filter, account creation, full-name/role editing, deactivation,
+  and reactivation. Passwords require at least 12 characters with a letter and a
+  number, are hashed immediately, and are never returned by the API.
+- Role/status changes take effect on the next authenticated request because the
+  backend resolves the current user from PostgreSQL for every request. Self role
+  changes, self deactivation, and removal of the last active ADMIN are rejected.
+- User creation, profile changes, role changes, deactivation, and reactivation
+  append dedicated audit records. ADMIN has a read-only `Nhật ký hệ thống` page
+  backed by `/api/v1/audit-logs`; other roles cannot access either admin route.
+- Supervisor candidate management now matches the RBAC specification;
+  reviewers retain genuinely read-only candidate/session views and cannot
+  trigger monitoring lifecycle or seek synchronization APIs.
+- Page/resource `403` responses use a consistent Vietnamese content message;
+  mutation `403` responses retain the action-specific message.
+- Existing append-only audit calls remain in the room, candidate, session,
+  assignment, media, and monitoring services. RBAC adds no per-frame or
+  WebSocket-message audit records.
+- Added backend permission-map and authorization regression tests. Frontend tests
+  cover the permission map, role landings/navigation, direct-route authorization,
+  `PermissionGate`, and the Vietnamese Forbidden page.
+- Frontend verification: `npm test` passes 10 files and 27 tests; `npm run
+  typecheck` passes; `npm run build` passes with 124 modules transformed; `git
+  diff --check` passes. No frontend lint script is configured in `package.json`.
+- Backend Ruff and format checks pass, and backend user-management/API regression
+  tests were added. Fresh backend pytest and mypy execution are blocked because
+  the host virtualenv targets container Python 3.11, while the Docker volume run
+  requires an approval service that currently returns `MODEL_NOT_FOUND`. The
+  overall RBAC status therefore remains `NOT PASSED`.
+- Events/reviews, evidence, appeals, reports, and system settings do not yet
+  expose application APIs in this milestone. Event/review,
+  evidence, appeal, report, and system-setting navigation/pages remain omitted
+  instead of fabricating data or placeholder workflows.
+- No detector, tracker, scheduler, WebSocket schema, or other AI behavior was
+  changed by the RBAC UI implementation.
 
 ## Next Boundary
 

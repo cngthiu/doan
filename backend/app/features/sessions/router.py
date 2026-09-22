@@ -6,9 +6,9 @@ from fastapi import APIRouter, Query, status
 from app.db.models.session import ExamSessionStatus
 from app.features.auth.dependencies import (
     ApplicationSettings,
-    CurrentUser,
     DatabaseSession,
-    SessionEditor,
+    SessionManager,
+    SessionReader,
 )
 from app.features.sessions.schemas import (
     SessionCandidatesUpdate,
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 @router.get("", response_model=Page[SessionResponse])
 def get_sessions(
-    _: CurrentUser,
+    _: SessionReader,
     db: DatabaseSession,
     q: str | None = Query(default=None, max_length=255),
     session_status: Annotated[ExamSessionStatus | None, Query(alias="status")] = None,
@@ -45,7 +45,7 @@ def get_sessions(
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 def post_session(
     payload: SessionCreate,
-    actor: SessionEditor,
+    actor: SessionManager,
     db: DatabaseSession,
 ) -> SessionResponse:
     return create_session(db, payload, actor)
@@ -54,7 +54,7 @@ def post_session(
 @router.get("/{session_id}", response_model=SessionResponse)
 def get_session(
     session_id: uuid.UUID,
-    _: CurrentUser,
+    _: SessionReader,
     db: DatabaseSession,
 ) -> SessionResponse:
     return session_response(db, session_or_error(db, session_id))
@@ -64,7 +64,7 @@ def get_session(
 def patch_session(
     session_id: uuid.UUID,
     payload: SessionUpdate,
-    actor: SessionEditor,
+    actor: SessionManager,
     db: DatabaseSession,
     settings: ApplicationSettings,
 ) -> SessionResponse:
@@ -75,7 +75,7 @@ def patch_session(
 def put_session_candidates(
     session_id: uuid.UUID,
     payload: SessionCandidatesUpdate,
-    actor: SessionEditor,
+    actor: SessionManager,
     db: DatabaseSession,
 ) -> SessionResponse:
     return replace_assignments(db, session_id, payload, actor)

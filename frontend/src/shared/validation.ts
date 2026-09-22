@@ -46,6 +46,31 @@ export function validateSession(values: {
   return errors
 }
 
+export function validateUserCreate(values: {
+  username: string
+  full_name: string | null
+  password: string
+  role: string
+}) {
+  const errors: FieldErrors = {
+    username: required(values.username, 'Tên đăng nhập', 100),
+    full_name: values.full_name && values.full_name.trim().length > 255
+      ? 'Họ và tên không được vượt quá 255 ký tự.' : undefined,
+    role: values.role ? undefined : 'Vai trò là bắt buộc.',
+  }
+  if (!errors.username && !/^[a-z0-9._-]+$/.test(values.username)) {
+    errors.username = 'Tên đăng nhập chỉ gồm chữ thường, số, dấu chấm, gạch ngang hoặc gạch dưới.'
+  }
+  if (values.password.length < 12) {
+    errors.password = 'Mật khẩu phải có ít nhất 12 ký tự.'
+  } else if (values.password.length > 128) {
+    errors.password = 'Mật khẩu không được vượt quá 128 ký tự.'
+  } else if (!/[A-Za-z]/.test(values.password) || !/\d/.test(values.password)) {
+    errors.password = 'Mật khẩu phải có ít nhất một chữ cái và một chữ số.'
+  }
+  return errors
+}
+
 export function hasErrors(errors: FieldErrors): boolean {
   return Object.values(errors).some(Boolean)
 }

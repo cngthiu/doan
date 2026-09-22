@@ -7,10 +7,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.core.errors import ApiError, error_payload
 from app.features.auth.dependencies import (
     ApplicationSettings,
-    CurrentUser,
     DatabaseSession,
-    MediaUser,
-    SessionEditor,
+    MediaReader,
+    MediaReaderWithCookie,
+    MediaUploader,
 )
 from app.features.media.schemas import MediaResponse
 from app.features.media.service import (
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/media", tags=["media"])
 
 @router.post("/videos", response_model=MediaResponse, status_code=status.HTTP_201_CREATED)
 async def post_video(
-    actor: SessionEditor,
+    actor: MediaUploader,
     db: DatabaseSession,
     settings: ApplicationSettings,
     file: Annotated[UploadFile, File()],
@@ -38,7 +38,7 @@ async def post_video(
 @router.get("/{media_id}", response_model=MediaResponse)
 def get_media(
     media_id: uuid.UUID,
-    _: CurrentUser,
+    _: MediaReader,
     db: DatabaseSession,
 ) -> MediaResponse:
     return media_response(media_or_error(db, media_id))
@@ -47,7 +47,7 @@ def get_media(
 @router.get("/{media_id}/content", response_model=None)
 def get_media_content(
     media_id: uuid.UUID,
-    _: MediaUser,
+    _: MediaReaderWithCookie,
     db: DatabaseSession,
     settings: ApplicationSettings,
     range_header: str | None = Header(default=None, alias="Range"),

@@ -6,14 +6,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 
 from app.core.errors import ApiError
+from app.core.permissions import Permission, has_permission
 from app.db.models.session import ExamSession
-from app.db.models.user import UserRole
 from app.features.auth.dependencies import (
     WEBSOCKET_COOKIE_NAME,
     ApplicationSettings,
-    CurrentUser,
     DatabaseSession,
-    MonitoringOperator,
+    SessionMonitor,
+    TrackingReader,
     resolve_user_from_token,
 )
 from app.features.monitoring.schemas import MonitoringPosition, MonitoringStatusResponse
@@ -41,7 +41,7 @@ RuntimeManager = Annotated[MonitoringRuntimeManager, Depends(get_runtime_manager
 @router.post("/{session_id}/start", response_model=MonitoringStatusResponse)
 def start_session_monitoring(
     session_id: uuid.UUID,
-    actor: MonitoringOperator,
+    actor: SessionMonitor,
     db: DatabaseSession,
     settings: ApplicationSettings,
     manager: RuntimeManager,
@@ -60,7 +60,7 @@ def start_session_monitoring(
 @router.post("/{session_id}/pause", response_model=MonitoringStatusResponse)
 def pause_session_monitoring(
     session_id: uuid.UUID,
-    actor: MonitoringOperator,
+    actor: SessionMonitor,
     db: DatabaseSession,
     manager: RuntimeManager,
     payload: MonitoringPosition | None = None,
@@ -77,7 +77,7 @@ def pause_session_monitoring(
 @router.post("/{session_id}/resume", response_model=MonitoringStatusResponse)
 def resume_session_monitoring(
     session_id: uuid.UUID,
-    actor: MonitoringOperator,
+    actor: SessionMonitor,
     db: DatabaseSession,
     manager: RuntimeManager,
     payload: MonitoringPosition | None = None,
@@ -94,7 +94,7 @@ def resume_session_monitoring(
 @router.post("/{session_id}/stop", response_model=MonitoringStatusResponse)
 def stop_session_monitoring(
     session_id: uuid.UUID,
-    actor: MonitoringOperator,
+    actor: SessionMonitor,
     db: DatabaseSession,
     manager: RuntimeManager,
 ) -> dict[str, object]:
@@ -105,7 +105,7 @@ def stop_session_monitoring(
 def seek_session_monitoring(
     session_id: uuid.UUID,
     payload: MonitoringPosition,
-    _: MonitoringOperator,
+    _: SessionMonitor,
     db: DatabaseSession,
     manager: RuntimeManager,
 ) -> dict[str, object]:
@@ -116,7 +116,7 @@ def seek_session_monitoring(
 @router.get("/{session_id}/monitoring-status", response_model=MonitoringStatusResponse)
 def get_session_monitoring_status(
     session_id: uuid.UUID,
-    _: CurrentUser,
+    _: TrackingReader,
     db: DatabaseSession,
     manager: RuntimeManager,
 ) -> dict[str, object]:
@@ -140,8 +140,8 @@ async def monitoring_socket(
     except ApiError as error:
         await websocket.close(code=4403 if error.status_code == 403 else 4401, reason=error.message)
         return
-    if user.role not in {role.value for role in UserRole}:
-        await websocket.close(code=4403, reason="Insufficient permissions")
+    if not has_permission(user.role, Permission.TRACKING_READ):
+        await websocket.close(code=4403, reason="You do not have permission to view tracking.")
         return
     if db.get(ExamSession, session_id) is None:
         await websocket.close(code=4404, reason="Session not found")

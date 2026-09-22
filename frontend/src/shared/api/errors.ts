@@ -16,6 +16,13 @@ export function apiErrorMessage(error: unknown): string {
   return 'Không thể thực hiện yêu cầu. Vui lòng thử lại.'
 }
 
+export function apiContentErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error) && error.response?.status === 403) {
+    return 'Bạn không có quyền truy cập nội dung này.'
+  }
+  return apiErrorMessage(error)
+}
+
 export function apiErrorField(error: unknown): string | null {
   if (!axios.isAxiosError<ApiErrorBody>(error)) return null
   return error.response?.data?.error?.field ?? null

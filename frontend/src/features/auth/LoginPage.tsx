@@ -2,6 +2,7 @@ import axios from 'axios'
 import { useState, type FormEvent } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 
+import { landingPathForRole } from '../../app/access'
 import { ErrorState } from '../../shared/components/ErrorState'
 import { FormField } from '../../shared/components/FormField'
 import { Icon } from '../../shared/components/Icon'
@@ -23,7 +24,7 @@ export function LoginPage() {
   const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({})
   const [submitting, setSubmitting] = useState(false)
 
-  if (user) return <Navigate to="/" replace />
+  if (user) return <Navigate to={landingPathForRole(user.role)} replace />
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -37,8 +38,8 @@ export function LoginPage() {
     if (validation.username || validation.password) return
     setSubmitting(true)
     try {
-      await login(normalizedUsername, password)
-      navigate('/', { replace: true })
+      const loggedInUser = await login(normalizedUsername, password)
+      navigate(landingPathForRole(loggedInUser.role), { replace: true })
     } catch (requestError) {
       setError(loginErrorMessage(requestError))
     } finally {

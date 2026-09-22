@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Query, status
 
-from app.features.auth.dependencies import AdminUser, CurrentUser, DatabaseSession
+from app.features.auth.dependencies import DatabaseSession, RoomManager, RoomReader
 from app.features.rooms.schemas import (
     RoomCreate,
     RoomResponse,
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/rooms", tags=["rooms"])
 
 @router.get("", response_model=Page[RoomResponse])
 def get_rooms(
-    _: CurrentUser,
+    _: RoomReader,
     db: DatabaseSession,
     q: str | None = Query(default=None, max_length=255),
     page: int = Query(default=1, ge=1),
@@ -41,12 +41,12 @@ def get_rooms(
 
 
 @router.post("", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
-def post_room(payload: RoomCreate, actor: AdminUser, db: DatabaseSession) -> RoomResponse:
+def post_room(payload: RoomCreate, actor: RoomManager, db: DatabaseSession) -> RoomResponse:
     return RoomResponse.model_validate(create_room(db, payload, actor))
 
 
 @router.get("/{room_id}", response_model=RoomResponse)
-def get_room(room_id: uuid.UUID, _: CurrentUser, db: DatabaseSession) -> RoomResponse:
+def get_room(room_id: uuid.UUID, _: RoomReader, db: DatabaseSession) -> RoomResponse:
     return RoomResponse.model_validate(room_or_error(db, room_id))
 
 
@@ -54,7 +54,7 @@ def get_room(room_id: uuid.UUID, _: CurrentUser, db: DatabaseSession) -> RoomRes
 def patch_room(
     room_id: uuid.UUID,
     payload: RoomUpdate,
-    actor: AdminUser,
+    actor: RoomManager,
     db: DatabaseSession,
 ) -> RoomResponse:
     return RoomResponse.model_validate(update_room(db, room_id, payload, actor))
@@ -63,7 +63,7 @@ def patch_room(
 @router.get("/{room_id}/seats", response_model=list[SeatResponse])
 def get_seats(
     room_id: uuid.UUID,
-    _: CurrentUser,
+    _: RoomReader,
     db: DatabaseSession,
 ) -> list[SeatResponse]:
     return [SeatResponse.model_validate(seat) for seat in list_active_seats(db, room_id)]
@@ -73,7 +73,7 @@ def get_seats(
 def put_seats(
     room_id: uuid.UUID,
     payload: SeatLayoutUpdate,
-    actor: AdminUser,
+    actor: RoomManager,
     db: DatabaseSession,
 ) -> list[SeatResponse]:
     seats = replace_seat_layout(db, room_id, payload, actor)

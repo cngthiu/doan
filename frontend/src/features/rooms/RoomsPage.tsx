@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 
-import { apiErrorField, apiErrorMessage } from '../../shared/api/errors'
+import { apiContentErrorMessage, apiErrorField, apiErrorMessage } from '../../shared/api/errors'
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog'
 import { EmptyState } from '../../shared/components/EmptyState'
 import { ErrorState } from '../../shared/components/ErrorState'
@@ -11,7 +11,7 @@ import { Pagination } from '../../shared/components/Pagination'
 import { useToast } from '../../shared/components/ToastProvider'
 import { useDebouncedValue } from '../../shared/hooks/useDebouncedValue'
 import { hasErrors, normalizedOptional, validateRoom, type FieldErrors } from '../../shared/validation'
-import { useAuth } from '../auth/AuthProvider'
+import { permissions, usePermissions } from '../auth/permissions'
 import { createRoom, getRooms, getSeats, updateRoom } from './api'
 import { SeatLayoutEditor } from './SeatLayoutEditor'
 import type { Room, RoomInput, Seat } from './types'
@@ -20,9 +20,9 @@ const blankRoom: RoomInput = { code: '', name: '', description: null, is_active:
 const pageSize = 20
 
 export function RoomsPage() {
-  const { user } = useAuth()
+  const { can } = usePermissions()
   const toast = useToast()
-  const editable = user?.role === 'ADMIN'
+  const editable = can(permissions.roomManage)
   const [rooms, setRooms] = useState<Room[]>([])
   const [selected, setSelected] = useState<Room | null>(null)
   const [seats, setSeats] = useState<Seat[]>([])
@@ -43,7 +43,7 @@ export function RoomsPage() {
     try {
       const result = await getRooms({ query: search, page: targetPage, pageSize })
       setRooms(result.items); setTotal(result.total)
-    } catch (requestError) { setError(apiErrorMessage(requestError)) }
+    } catch (requestError) { setError(apiContentErrorMessage(requestError)) }
     finally { setLoading(false) }
   }, [])
 
@@ -53,7 +53,7 @@ export function RoomsPage() {
     setSelected(room); setForm({ code: room.code, name: room.name, description: room.description, is_active: room.is_active })
     setEditing(true); setError(null); setFieldErrors({})
     try { setSeats(await getSeats(room.id)) }
-    catch (requestError) { setError(apiErrorMessage(requestError)) }
+    catch (requestError) { setError(apiContentErrorMessage(requestError)) }
   }
 
   const persist = async () => {

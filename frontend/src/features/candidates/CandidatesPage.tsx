@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 
-import { apiErrorField, apiErrorMessage } from '../../shared/api/errors'
+import { apiContentErrorMessage, apiErrorField, apiErrorMessage } from '../../shared/api/errors'
 import { EmptyState } from '../../shared/components/EmptyState'
 import { ErrorState } from '../../shared/components/ErrorState'
 import { FormField } from '../../shared/components/FormField'
@@ -10,7 +10,7 @@ import { Pagination } from '../../shared/components/Pagination'
 import { useToast } from '../../shared/components/ToastProvider'
 import { useDebouncedValue } from '../../shared/hooks/useDebouncedValue'
 import { hasErrors, normalizedOptional, validateCandidate, type FieldErrors } from '../../shared/validation'
-import { useAuth } from '../auth/AuthProvider'
+import { permissions, usePermissions } from '../auth/permissions'
 import { createCandidate, getCandidates, updateCandidate } from './api'
 import type { Candidate, CandidateInput } from './types'
 
@@ -18,9 +18,9 @@ const blank: CandidateInput = { candidate_code: '', full_name: '', class_name: n
 const pageSize = 20
 
 export function CandidatesPage() {
-  const { user } = useAuth()
+  const { can } = usePermissions()
   const toast = useToast()
-  const editable = user?.role === 'ADMIN'
+  const editable = can(permissions.candidateManage)
   const [items, setItems] = useState<Candidate[]>([])
   const [selected, setSelected] = useState<Candidate | null>(null)
   const [form, setForm] = useState<CandidateInput>(blank)
@@ -38,7 +38,7 @@ export function CandidatesPage() {
     try {
       const result = await getCandidates({ query: search, page: targetPage, pageSize })
       setItems(result.items); setTotal(result.total)
-    } catch (requestError) { setError(apiErrorMessage(requestError)) }
+    } catch (requestError) { setError(apiContentErrorMessage(requestError)) }
     finally { setLoading(false) }
   }, [])
 
@@ -95,21 +95,27 @@ export function CandidatesPage() {
       <section className="card">
         <h2>{selected ? 'Thông tin thí sinh' : 'Thêm thí sinh'}</h2>
         {!selected && !editable && <EmptyState title="Chọn một thí sinh để xem thông tin." />}
-        {(selected || editable) && <form onSubmit={submit} noValidate>
+        {editable && <form onSubmit={submit} noValidate>
           <FormField label="Mã thí sinh" htmlFor="candidate-code" required error={fieldErrors.candidate_code}>
-            <input id="candidate-code" maxLength={100} value={form.candidate_code} disabled={!editable} onChange={(event) => setForm({ ...form, candidate_code: event.target.value })} />
+            <input id="candidate-code" maxLength={100} value={form.candidate_code} onChange={(event) => setForm({ ...form, candidate_code: event.target.value })} />
           </FormField>
           <FormField label="Họ và tên" htmlFor="candidate-name" required error={fieldErrors.full_name}>
-            <input id="candidate-name" maxLength={255} value={form.full_name} disabled={!editable} onChange={(event) => setForm({ ...form, full_name: event.target.value })} />
+            <input id="candidate-name" maxLength={255} value={form.full_name} onChange={(event) => setForm({ ...form, full_name: event.target.value })} />
           </FormField>
           <FormField label="Lớp" htmlFor="candidate-class" error={fieldErrors.class_name}>
-            <input id="candidate-class" maxLength={255} value={form.class_name ?? ''} disabled={!editable} onChange={(event) => setForm({ ...form, class_name: event.target.value || null })} />
+            <input id="candidate-class" maxLength={255} value={form.class_name ?? ''} onChange={(event) => setForm({ ...form, class_name: event.target.value || null })} />
           </FormField>
           <FormField label="Ghi chú" htmlFor="candidate-note" error={fieldErrors.note}>
-            <textarea id="candidate-note" maxLength={5000} value={form.note ?? ''} disabled={!editable} onChange={(event) => setForm({ ...form, note: event.target.value || null })} />
+            <textarea id="candidate-note" maxLength={5000} value={form.note ?? ''} onChange={(event) => setForm({ ...form, note: event.target.value || null })} />
           </FormField>
           {editable && <button className="primary-button" type="submit" disabled={saving}>{saving ? 'Đang lưu…' : 'Lưu'}</button>}
         </form>}
+        {selected && !editable && <dl className="detail-list">
+          <div><dt>Mã thí sinh</dt><dd>{selected.candidate_code}</dd></div>
+          <div><dt>Họ và tên</dt><dd>{selected.full_name}</dd></div>
+          <div><dt>Lớp</dt><dd>{selected.class_name ?? '—'}</dd></div>
+          <div><dt>Ghi chú</dt><dd>{selected.note ?? '—'}</dd></div>
+        </dl>}
       </section>
     </div>
   </div>

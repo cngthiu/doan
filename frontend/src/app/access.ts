@@ -1,0 +1,71 @@
+import { matchPath } from 'react-router-dom'
+
+import { hasPermission, permissions, type Permission } from '../features/auth/permissions'
+import type { UserRole } from '../features/auth/types'
+import type { IconName } from '../shared/components/Icon'
+
+export interface AppRouteAccess {
+  id: 'overview' | 'monitoring' | 'sessions' | 'session-detail' | 'candidates' | 'rooms' | 'users' | 'audit'
+  path: string
+  permission: Permission
+}
+
+export interface NavigationItem {
+  label: string
+  to: string
+  icon: IconName
+  permission: Permission
+  section?: string
+  end?: boolean
+}
+
+export const appRouteAccess: readonly AppRouteAccess[] = [
+  { id: 'overview', path: '/overview', permission: permissions.dashboardRead },
+  { id: 'monitoring', path: '/monitoring', permission: permissions.trackingRead },
+  { id: 'sessions', path: '/sessions', permission: permissions.sessionRead },
+  { id: 'session-detail', path: '/sessions/:id', permission: permissions.sessionRead },
+  { id: 'candidates', path: '/candidates', permission: permissions.candidateRead },
+  { id: 'rooms', path: '/settings/rooms', permission: permissions.roomManage },
+  { id: 'users', path: '/settings/users', permission: permissions.userManage },
+  { id: 'audit', path: '/settings/audit', permission: permissions.auditRead },
+]
+
+const navigationByRole: Readonly<Record<UserRole, readonly NavigationItem[]>> = {
+  ADMIN: [
+    { label: 'Tổng quan', to: '/overview', icon: 'chart', permission: permissions.dashboardRead },
+    { label: 'Giám sát', to: '/monitoring', icon: 'camera', permission: permissions.trackingRead },
+    { label: 'Phiên thi', to: '/sessions', icon: 'calendar', permission: permissions.sessionRead },
+    { label: 'Thí sinh', to: '/candidates', icon: 'users', permission: permissions.candidateRead },
+    { label: 'Phòng thi', to: '/settings/rooms', icon: 'door', permission: permissions.roomManage, section: 'CÀI ĐẶT' },
+    { label: 'Người dùng', to: '/settings/users', icon: 'users', permission: permissions.userManage, section: 'CÀI ĐẶT' },
+    { label: 'Nhật ký hệ thống', to: '/settings/audit', icon: 'clipboard', permission: permissions.auditRead, section: 'CÀI ĐẶT' },
+  ],
+  SUPERVISOR: [
+    { label: 'Giám sát', to: '/monitoring', icon: 'camera', permission: permissions.trackingRead },
+    { label: 'Phiên thi', to: '/sessions', icon: 'calendar', permission: permissions.sessionRead },
+    { label: 'Thí sinh', to: '/candidates', icon: 'users', permission: permissions.candidateRead },
+  ],
+  REVIEWER: [
+    { label: 'Phiên thi', to: '/sessions', icon: 'calendar', permission: permissions.sessionRead },
+    { label: 'Thí sinh', to: '/candidates', icon: 'users', permission: permissions.candidateRead },
+  ],
+}
+
+export function landingPathForRole(role: UserRole): string {
+  if (role === 'ADMIN') return '/overview'
+  if (role === 'SUPERVISOR') return '/monitoring'
+  return '/sessions'
+}
+
+export function navigationForRole(role: UserRole): readonly NavigationItem[] {
+  return navigationByRole[role].filter((item) => hasPermission(role, item.permission))
+}
+
+export function requiredPermissionForPath(pathname: string): Permission | null {
+  return appRouteAccess.find((route) => matchPath({ path: route.path, end: true }, pathname))?.permission ?? null
+}
+
+export function canAccessRoute(role: UserRole, pathname: string): boolean {
+  const permission = requiredPermissionForPath(pathname)
+  return permission !== null && hasPermission(role, permission)
+}

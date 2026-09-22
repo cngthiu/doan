@@ -4,14 +4,14 @@ import { getCurrentUser, loginRequest, logoutRequest } from './api'
 import { browserTokenStore } from './tokenStorage'
 import type { AuthUser } from './types'
 
-interface AuthContextValue {
+export interface AuthContextValue {
   user: AuthUser | null
   loading: boolean
-  login(username: string, password: string): Promise<void>
+  login(username: string, password: string): Promise<AuthUser>
   logout(): void
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null)
+export const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
@@ -48,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const result = await loginRequest(username, password)
         browserTokenStore.set(result.access_token)
         setUser(result.user)
+        return result.user
       },
       logout: () => {
         void logoutRequest().catch(() => undefined)

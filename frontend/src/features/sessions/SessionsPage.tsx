@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 
-import { apiErrorField, apiErrorMessage } from '../../shared/api/errors'
+import { apiContentErrorMessage, apiErrorField, apiErrorMessage } from '../../shared/api/errors'
 import { EmptyState } from '../../shared/components/EmptyState'
 import { ErrorState } from '../../shared/components/ErrorState'
 import { FormField } from '../../shared/components/FormField'
@@ -14,7 +14,7 @@ import { formatDateTime } from '../../shared/formatters'
 import { useDebouncedValue } from '../../shared/hooks/useDebouncedValue'
 import { sessionStatusLabels } from '../../shared/i18n/vi'
 import { hasErrors, validateSession, type FieldErrors } from '../../shared/validation'
-import { useAuth } from '../auth/AuthProvider'
+import { permissions, usePermissions } from '../auth/permissions'
 import { getRooms } from '../rooms/api'
 import type { Room } from '../rooms/types'
 import { createSession, getSessions } from './api'
@@ -24,9 +24,9 @@ const blank: SessionInput = { session_code: '', exam_name: '', room_id: '', sche
 const pageSize = 20
 
 export function SessionsPage() {
-  const { user } = useAuth()
+  const { can } = usePermissions()
   const toast = useToast()
-  const canCreate = user?.role === 'ADMIN' || user?.role === 'SUPERVISOR'
+  const canCreate = can(permissions.sessionManage)
   const [items, setItems] = useState<ExamSession[]>([])
   const [rooms, setRooms] = useState<Room[]>([])
   const [form, setForm] = useState<SessionInput>(blank)
@@ -46,14 +46,15 @@ export function SessionsPage() {
     try {
       const result = await getSessions({ query: search, page: targetPage, pageSize, status: selectedStatus || undefined })
       setItems(result.items); setTotal(result.total)
-    } catch (requestError) { setError(apiErrorMessage(requestError)) }
+    } catch (requestError) { setError(apiContentErrorMessage(requestError)) }
     finally { setLoading(false) }
   }, [])
 
   useEffect(() => { setPage(1); void load(debouncedQuery, 1, statusFilter) }, [debouncedQuery, load, statusFilter])
   useEffect(() => {
-    getRooms({ pageSize: 100 }).then((result) => setRooms(result.items.filter((room) => room.is_active))).catch((requestError) => setError(apiErrorMessage(requestError)))
-  }, [])
+    if (!canCreate) return
+    getRooms({ pageSize: 100 }).then((result) => setRooms(result.items.filter((room) => room.is_active))).catch((requestError) => setError(apiContentErrorMessage(requestError)))
+  }, [canCreate])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()

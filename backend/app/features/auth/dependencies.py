@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
+from app.core.permissions import Permission, has_permission
 from app.core.security import decode_access_token
-from app.db.models.user import User, UserRole
+from app.db.models.user import User
 from app.db.session import get_db
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -69,27 +70,41 @@ def get_media_user(
 MediaUser = Annotated[User, Depends(get_media_user)]
 
 
-def require_roles(*roles: UserRole) -> Callable[[CurrentUser], User]:
-    allowed = {role.value for role in roles}
-
-    def role_dependency(current_user: CurrentUser) -> User:
-        if current_user.role not in allowed:
+def require_permission(permission: Permission) -> Callable[[CurrentUser], User]:
+    def permission_dependency(current_user: CurrentUser) -> User:
+        if not has_permission(current_user.role, permission):
             raise ApiError(
                 status.HTTP_403_FORBIDDEN,
                 "FORBIDDEN",
-                "Insufficient permissions",
+                "You do not have permission to perform this action.",
             )
         return current_user
 
-    return role_dependency
+    return permission_dependency
 
 
-AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
-SessionEditor = Annotated[
-    User,
-    Depends(require_roles(UserRole.ADMIN, UserRole.SUPERVISOR)),
-]
-MonitoringOperator = Annotated[
-    User,
-    Depends(require_roles(UserRole.ADMIN, UserRole.SUPERVISOR)),
-]
+RoomReader = Annotated[User, Depends(require_permission(Permission.ROOM_READ))]
+RoomManager = Annotated[User, Depends(require_permission(Permission.ROOM_MANAGE))]
+CandidateReader = Annotated[User, Depends(require_permission(Permission.CANDIDATE_READ))]
+CandidateManager = Annotated[User, Depends(require_permission(Permission.CANDIDATE_MANAGE))]
+SessionReader = Annotated[User, Depends(require_permission(Permission.SESSION_READ))]
+SessionManager = Annotated[User, Depends(require_permission(Permission.SESSION_MANAGE))]
+SessionMonitor = Annotated[User, Depends(require_permission(Permission.SESSION_MONITOR))]
+MediaReader = Annotated[User, Depends(require_permission(Permission.MEDIA_READ))]
+MediaUploader = Annotated[User, Depends(require_permission(Permission.MEDIA_UPLOAD))]
+TrackingReader = Annotated[User, Depends(require_permission(Permission.TRACKING_READ))]
+UserManager = Annotated[User, Depends(require_permission(Permission.USER_MANAGE))]
+AuditReader = Annotated[User, Depends(require_permission(Permission.AUDIT_READ))]
+
+
+def get_media_reader(media_user: MediaUser) -> User:
+    if not has_permission(media_user.role, Permission.MEDIA_READ):
+        raise ApiError(
+            status.HTTP_403_FORBIDDEN,
+            "FORBIDDEN",
+            "You do not have permission to perform this action.",
+        )
+    return media_user
+
+
+MediaReaderWithCookie = Annotated[User, Depends(get_media_reader)]
