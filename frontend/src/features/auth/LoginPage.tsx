@@ -4,6 +4,7 @@ import { Navigate, useNavigate } from 'react-router-dom'
 
 import { ErrorState } from '../../shared/components/ErrorState'
 import { FormField } from '../../shared/components/FormField'
+import { Icon } from '../../shared/components/Icon'
 import { useAuth } from './AuthProvider'
 
 function loginErrorMessage(error: unknown): string {
@@ -48,7 +49,7 @@ export function LoginPage() {
   return (
     <main className="login-screen">
       <section className="login-card" aria-labelledby="login-title">
-        <div className="brand-badge">E</div>
+        <div className="brand-badge"><Icon name="shield" /></div>
         <p className="eyebrow">EXAMGUARD</p>
         <h1 id="login-title">Đăng nhập hệ thống</h1>
         <p className="secondary-text">Nền tảng giám sát và rà soát phòng thi</p>

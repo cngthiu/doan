@@ -111,6 +111,15 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     if args.detector_iou is not None:
         logger.warning("Explicit benchmark detector override iou=%s", args.detector_iou)
         profile.detector = profile.detector.model_copy(update={"iou": args.detector_iou})
+    if args.disable_duplicate_suppression:
+        logger.warning("Duplicate suppression disabled for benchmark ablation")
+        profile.detector = profile.detector.model_copy(
+            update={
+                "duplicate_suppression": profile.detector.duplicate_suppression.model_copy(
+                    update={"enabled": False}
+                )
+            }
+        )
     if args.new_track_thresh is not None:
         logger.warning(
             "Explicit benchmark tracker override new_track_thresh=%s",
@@ -149,6 +158,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     lifecycle_counts: Counter[str] = Counter()
     track_lifetimes: dict[int, list[int]] = {}
     total_detections = 0
+    total_raw_detections = 0
+    total_suppressed_detections = 0
     peak_simultaneous_tracks = 0
     suspicious_overlap_count = 0
     gpu_util_samples: list[float] = []
@@ -167,6 +178,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             pipeline_started = time.perf_counter()
             detector_started = time.perf_counter()
             detections = detector.detect(packet.frame)
+            raw_detection_count = detector.last_raw_detection_count
+            suppressed_detection_count = detector.last_suppressed_detection_count
             detector_ms = (time.perf_counter() - detector_started) * 1000
             tracker_started = time.perf_counter()
             tracks = tracker.update(detections, packet.frame.shape[:2], packet.timestamp_ms)
@@ -181,6 +194,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             tracker_latencies.append(tracker_ms)
             pipeline_latencies.append(pipeline_ms)
             total_detections += len(detections)
+            total_raw_detections += raw_detection_count
+            total_suppressed_detections += suppressed_detection_count
             peak_simultaneous_tracks = max(peak_simultaneous_tracks, len(tracks))
             suspicious_overlap_count += len(overlaps)
             for event in tracker.drain_lifecycle_events():
@@ -197,6 +212,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "timestamp_ms": packet.timestamp_ms,
                     "frame_id": packet.frame_id,
                     "detection_count": len(detections),
+                    "raw_detection_count": raw_detection_count,
+                    "suppressed_detection_count": suppressed_detection_count,
                     "active_track_count": len(tracks),
                     "track_ids": " ".join(str(track.track_id) for track in tracks),
                     "track_boxes": json.dumps(
@@ -269,6 +286,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "pipeline": pipeline_latencies[0] if pipeline_latencies else None,
         },
         "number_of_detections": total_detections,
+        "number_of_raw_detections": total_raw_detections,
+        "number_of_suppressed_detections": total_suppressed_detections,
         "number_of_created_tracks": lifecycle_counts["TRACK_CREATED"],
         "peak_simultaneous_tracks": peak_simultaneous_tracks,
         "track_lifetime_ms": {
@@ -357,6 +376,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration-seconds", type=float, default=30.0)
     parser.add_argument("--device", help="Explicit benchmark-only device override, for example cpu")
     parser.add_argument("--detector-iou", type=float, help="Single-variable YOLO NMS IoU ablation")
+    parser.add_argument(
+        "--disable-duplicate-suppression",
+        action="store_true",
+        help="Disable nested-box suppression for an A/B benchmark",
+    )
     parser.add_argument("--new-track-thresh", type=float, help="Single-variable ByteTrack ablation")
     parser.add_argument(
         "--match-thresh",

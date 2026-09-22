@@ -18,6 +18,13 @@ detector:
   classes: [0]
   max_det: 32
   half: true
+  duplicate_suppression:
+    enabled: true
+    containment_threshold: 0.90
+    max_area_ratio: 0.70
+    max_center_distance_ratio: 0.35
+    preferred_detection_confidence: 0.25
+    larger_box_min_confidence_ratio: 0.65
 
 tracker:
   config: /app/configs/tracking/bytetrack_exam_3060.yaml

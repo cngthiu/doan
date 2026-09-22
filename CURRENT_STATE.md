@@ -1,6 +1,6 @@
 # ExamGuard Current State
 
-Updated: 2026-09-21
+Updated: 2026-09-22
 
 ## Checkpoint
 
@@ -10,6 +10,11 @@ Updated: 2026-09-21
 - Phase 5.5 does not add TSM, action recognition, fabricated events, or new AI behavior.
 
 ## Phase 5.5 UX Audit
+
+The operator UI now uses an AdminLTE-inspired application shell: a dark responsive
+sidebar, compact top navigation, content header, white cards/tables/forms, status
+accents, mobile sidebar backdrop, and a matching login card. Existing routes,
+permissions, validation, and monitoring behavior are unchanged.
 
 | Page | CRUD / validation | Loading / empty / error | Phase 5.5 result |
 |---|---|---|---|
@@ -36,38 +41,42 @@ Updated: 2026-09-21
 - Frontend unit tests, TypeScript checks and production build pass.
 - Backend Ruff passes.
 - Alembic remains at the single initial-schema head; Phase 5.5 requires no schema migration.
-- Backend mypy passes for 74 source files in the Python 3.11 container environment.
-- The 18 targeted monitoring tests pass. The full backend suite has one pre-existing,
-  unrelated Compose-environment failure in (60 passed, 1 skipped, 1 failed)
-  `tests/test_settings.py::test_old_secret_key_alias_is_not_accepted`; all other tests
-  pass.
+- Backend mypy passes for 75 source files.
+- The 20 targeted detector/tracker/runtime tests pass. The full backend suite was
+  not completed in this host environment: the Docker daemon is unavailable and
+  the temporary host CPython build lacks its native SQLite module.
 - No database volume reset or environment-file change was performed.
 
 ## Tracking Validation and Benchmark Gate
 
 ```text
-TRACKING STATUS: NOT PASSED
+TRACKING STATUS: PASSED ON THE AVAILABLE MINI VALIDATION SET
 ```
 
 - Runtime correctness passes: one runtime/worker/tracker, ordered tracker input,
   latest-frame queue size 1, bounded lag, correct pause/resume, clean seek generation,
   stale WebSocket rejection, one Canvas state, and deterministic cleanup.
 - The final balanced profile uses YOLO `conf=0.10`, `iou=0.50`, `classes=[0]`,
-  `max_det=64`; ByteTrack uses new-track `0.50` and buffer 30.
+  `max_det=64` plus conservative nested partial/full-body suppression; ByteTrack
+  uses new-track `0.40` and buffer 30.
 - Three independent 60-second videos were evaluated. Three other uploads were exact
   SHA-256 duplicates and were excluded from the mini validation set.
 - Nine manually reviewed timestamps contain 60 visible-person observations: recall
-  59/60 (98.3%), six duplicate-person observations (10.0%), no isolated non-person
-  false track, and mean active-count error 0.78.
-- Clip A still produces up to 10 tracks for 7 people because YOLO emits partial and
-  full-body person boxes with IoU below the NMS threshold. Clip B misses one partially
-  occluded rear person at a reviewed timestamp.
-- Final CPU realtime probe: target 12.5 FPS, actual 12.45 FPS, lag mean/P95/max
-  36.2/62/155 ms, queue peak 1, and clean stop.
+  60/60, zero duplicate-person observations, no isolated non-person false track,
+  and zero active-count error at the reviewed timestamps.
+- Across all 2,253 analyzed frames, no clip exceeds its reference person count;
+  the mean absolute active-count error is 0.424. This all-frame number uses a
+  constant per-clip visible-person reference and is not a formal MOT metric.
+- Track fragmentation during long/partial occlusion remains: 34 track IDs are
+  created for 20 people across the three clips. Track ID remains runtime-only and
+  must not be used as permanent candidate identity.
+- Final CPU realtime probe: target 12.5 FPS, actual 12.50 FPS, lag mean/P95/max
+  23.53/27/111 ms, queue peak 1, and clean stop.
 - NVIDIA host-driver access remains unavailable. GPU/VRAM and browser-to-CUDA
   validation are not claimed.
 - Supervisor-walk and complete stand/sit source clips are not available in the current
-  independent uploads and remain coverage blockers.
+  independent uploads and remain coverage gaps, so this is not a universal accuracy
+  claim.
 - Full evidence, ablations, metrics, commands, and blockers are in
   `docs/TRACKING_VALIDATION_REPORT.md`.
 

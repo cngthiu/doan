@@ -16,6 +16,15 @@ class AnalysisConfig(BaseModel):
     drop_stale_frames: Literal[True]
 
 
+class DuplicateSuppressionConfig(BaseModel):
+    enabled: bool = True
+    containment_threshold: float = Field(default=0.90, gt=0, le=1)
+    max_area_ratio: float = Field(default=0.70, gt=0, lt=1)
+    max_center_distance_ratio: float = Field(default=0.35, gt=0, le=1)
+    preferred_detection_confidence: float = Field(default=0.25, gt=0, le=1)
+    larger_box_min_confidence_ratio: float = Field(default=0.65, gt=0, le=1)
+
+
 class DetectorConfig(BaseModel):
     model: Path
     imgsz: int = Field(gt=0)
@@ -25,6 +34,9 @@ class DetectorConfig(BaseModel):
     max_det: int = Field(gt=0)
     half: bool
     device: str = "cuda:0"
+    duplicate_suppression: DuplicateSuppressionConfig = Field(
+        default_factory=DuplicateSuppressionConfig
+    )
 
     @model_validator(mode="after")
     def person_only(self) -> DetectorConfig:

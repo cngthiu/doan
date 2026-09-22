@@ -36,6 +36,13 @@ detector:
   classes: [0]
   max_det: 64
   half: true
+  duplicate_suppression:
+    enabled: true
+    containment_threshold: 0.90
+    max_area_ratio: 0.70
+    max_center_distance_ratio: 0.35
+    preferred_detection_confidence: 0.25
+    larger_box_min_confidence_ratio: 0.65
 tracker:
   config: /app/configs/tracking/bytetrack_exam.yaml
 diagnostics:
@@ -67,6 +74,13 @@ detector:
   classes: [0]
   max_det: 32
   half: true
+  duplicate_suppression:
+    enabled: true
+    containment_threshold: 0.90
+    max_area_ratio: 0.70
+    max_center_distance_ratio: 0.35
+    preferred_detection_confidence: 0.25
+    larger_box_min_confidence_ratio: 0.65
 tracker:
   config: /app/configs/tracking/bytetrack_exam_3060.yaml
 diagnostics:
@@ -84,7 +98,7 @@ Do not automatically use a larger YOLO model on RTX3060. Benchmark first.
 tracker_type: bytetrack
 track_high_thresh: 0.25
 track_low_thresh: 0.10
-new_track_thresh: 0.50
+new_track_thresh: 0.40
 track_buffer: 30
 match_thresh: 0.80
 fuse_score: true
@@ -95,7 +109,7 @@ fuse_score: true
 tracker_type: bytetrack
 track_high_thresh: 0.25
 track_low_thresh: 0.10
-new_track_thresh: 0.50
+new_track_thresh: 0.40
 track_buffer: 30
 match_thresh: 0.80
 fuse_score: true
@@ -103,6 +117,9 @@ fuse_score: true
 
 At monitoring start, log active profile, detector model/config, tracker config and source metadata. Invalid config must fail fast. Do not silently fall back to CPU unless configured.
 
-The stabilized `iou` and `new_track_thresh` values were selected from single-variable ablations
-on representative exam-room footage. Keep `conf=0.10` and `track_low_thresh=0.10` so ByteTrack
-can still associate partially occluded people; do not raise either value merely to reduce ID counts.
+The stabilized `iou`, duplicate-suppression, and `new_track_thresh` values were selected from
+controlled ablations on representative exam-room footage. Nested suppression is deliberately
+limited to strongly contained, center-aligned boxes with materially different areas; adjacent
+people that merely overlap are retained. Keep `conf=0.10` and `track_low_thresh=0.10` so
+ByteTrack can still associate partially occluded people; do not raise either value merely to
+reduce ID counts.

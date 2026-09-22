@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 import torch
 
-from app.ai.detector.yolo import PersonDetector
+from app.ai.detector.yolo import PersonDetector, suppress_nested_person_detections
 from app.ai.domain import Detection, normalize_bbox
 from app.ai.tracker.bytetrack import ByteTrackAdapter
 from app.cli.render_tracking_artifact import nearest_row
 from app.monitoring.config import (
     ByteTrackConfig,
     DetectorConfig,
+    DuplicateSuppressionConfig,
     load_runtime_profile,
     load_runtime_profile_from_paths,
 )
@@ -71,6 +72,54 @@ def test_yolo_adapter_filters_person_and_passes_exact_configuration(tmp_path: Pa
     assert fake.arguments["quantize"] == 16
 
 
+def test_nested_duplicate_suppression_removes_partial_box_but_keeps_neighbor() -> None:
+    full = Detection((100, 100, 300, 700), 0.82, 0)
+    partial = Detection((120, 120, 280, 430), 0.71, 0)
+    adjacent = Detection((260, 130, 430, 510), 0.78, 0)
+
+    filtered = suppress_nested_person_detections(
+        [full, partial, adjacent],
+        DuplicateSuppressionConfig(),
+    )
+
+    assert filtered == [full, adjacent]
+
+
+def test_nested_duplicate_suppression_prefers_confident_partial_over_weak_large_box() -> None:
+    weak_large = Detection((100, 100, 300, 700), 0.30, 0)
+    confident_partial = Detection((120, 120, 280, 430), 0.80, 0)
+
+    assert suppress_nested_person_detections(
+        [weak_large, confident_partial],
+        DuplicateSuppressionConfig(),
+    ) == [confident_partial]
+
+
+def test_nested_duplicate_suppression_does_not_trade_confidence_for_box_size() -> None:
+    low_confidence_large = Detection((100, 100, 300, 700), 0.22, 0)
+    stronger_partial = Detection((120, 120, 280, 430), 0.28, 0)
+
+    assert suppress_nested_person_detections(
+        [low_confidence_large, stronger_partial],
+        DuplicateSuppressionConfig(),
+    ) == [stronger_partial]
+
+
+def test_nested_duplicate_suppression_can_be_disabled() -> None:
+    detections = [
+        Detection((100, 100, 300, 700), 0.82, 0),
+        Detection((120, 120, 280, 430), 0.71, 0),
+    ]
+
+    assert (
+        suppress_nested_person_detections(
+            detections,
+            DuplicateSuppressionConfig(enabled=False),
+        )
+        == detections
+    )
+
+
 def test_bbox_normalization_clamps_coordinates() -> None:
     assert normalize_bbox((-10, 20, 220, 120), 200, 100) == (0.0, 0.2, 1.0, 1.0)
     with pytest.raises(ValueError):
@@ -117,7 +166,10 @@ def test_runtime_profiles_match_phase_four_contract() -> None:
     assert gtx.tracker.track_buffer == 30
     assert gtx.detector.iou == 0.50
     assert gtx.detector.max_det == 64
-    assert gtx.tracker.new_track_thresh == 0.50
+    assert gtx.tracker.new_track_thresh == 0.40
+    assert gtx.detector.duplicate_suppression.enabled is True
+    assert gtx.detector.duplicate_suppression.containment_threshold == 0.90
+    assert gtx.detector.duplicate_suppression.preferred_detection_confidence == 0.25
     assert gtx.tracking_debug.enabled is False
     assert gtx.ui.tracking_interpolation is False
     assert gtx.ui.tracking_smoothing is False
