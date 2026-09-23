@@ -11,6 +11,7 @@ from typing import Any
 
 from app.ai.action_recognition.adapter import ActionModelRegistry
 from app.ai.detector.yolo import PersonDetector
+from app.ai.event_aggregation.types import AggregatedEvent
 from app.ai.seat_identity.types import SeatIdentityContext
 from app.monitoring.config import RuntimeProfile
 from app.monitoring.publisher import LatestWebSocketPublisher, Subscriber
@@ -47,11 +48,13 @@ class MonitoringRuntimeManager:
         *,
         worker_factory: Callable[..., VideoAnalysisWorker] = VideoAnalysisWorker,
         terminal_callback: Callable[[uuid.UUID, RuntimeState, str | None], None] | None = None,
+        event_callback: Callable[[AggregatedEvent], None] | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._handles: dict[uuid.UUID, RuntimeHandle] = {}
         self._worker_factory = worker_factory
         self._terminal_callback = terminal_callback
+        self._event_callback = event_callback
         self._action_models = ActionModelRegistry()
 
     def start(
@@ -96,6 +99,10 @@ class MonitoringRuntimeManager:
                 )
                 action_model.ensure_loaded()
                 worker_arguments["action_model"] = action_model
+            if profile.event_detection.enabled:
+                if self._event_callback is None:
+                    raise RuntimeError("AI Event persistence is not configured")
+                worker_arguments["event_callback"] = self._event_callback
             worker = self._worker_factory(**worker_arguments)
             handle = RuntimeHandle(
                 worker=worker,

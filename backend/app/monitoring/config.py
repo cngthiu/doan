@@ -132,6 +132,75 @@ class ActionRecognitionConfig(BaseModel):
     adjacency: ActionAdjacencyConfig = Field(default_factory=ActionAdjacencyConfig)
 
 
+class EventSmoothingConfig(BaseModel):
+    type: Literal["ema"] = "ema"
+    alpha: float = Field(gt=0, le=1)
+
+
+class EventBehaviorConfig(BaseModel):
+    proposal_types: list[Literal["SINGLE", "PAIR"]] = Field(min_length=1)
+    smoothing: EventSmoothingConfig
+    start_threshold: float = Field(gt=0, le=1)
+    keep_threshold: float = Field(ge=0, lt=1)
+    min_active_ms: int = Field(gt=0)
+    end_grace_ms: int = Field(ge=0)
+    merge_gap_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_hysteresis(self) -> EventBehaviorConfig:
+        if self.start_threshold <= self.keep_threshold:
+            raise ValueError("event start_threshold must be greater than keep_threshold")
+        if len(set(self.proposal_types)) != len(self.proposal_types):
+            raise ValueError("event proposal_types must not contain duplicates")
+        return self
+
+
+class EventDetectionConfig(BaseModel):
+    enabled: bool = False
+    max_discontinuity_ms: int = Field(default=5000, gt=0)
+    dedup_temporal_iou: float = Field(default=0.30, ge=0, le=1)
+    dedup_max_gap_ms: int = Field(default=2000, ge=0)
+    suspicious_looking: EventBehaviorConfig | None = None
+    communicating: EventBehaviorConfig | None = None
+    exchange_object: EventBehaviorConfig | None = None
+    using_phone_cheat_sheet: EventBehaviorConfig | None = None
+
+    @model_validator(mode="after")
+    def require_calibrated_behavior_config(self) -> EventDetectionConfig:
+        behaviors = {
+            "suspicious_looking": self.suspicious_looking,
+            "communicating": self.communicating,
+            "exchange_object": self.exchange_object,
+            "using_phone_cheat_sheet": self.using_phone_cheat_sheet,
+        }
+        if self.enabled and any(value is None for value in behaviors.values()):
+            missing = sorted(name for name, value in behaviors.items() if value is None)
+            raise ValueError(
+                "event detection cannot be enabled without calibrated config for: "
+                + ", ".join(missing)
+            )
+        expected = {
+            "suspicious_looking": {"SINGLE"},
+            "using_phone_cheat_sheet": {"SINGLE"},
+            "communicating": {"PAIR"},
+            "exchange_object": {"PAIR"},
+        }
+        for name, value in behaviors.items():
+            if value is not None and set(value.proposal_types) != expected[name]:
+                raise ValueError(f"invalid proposal routing for {name}")
+        return self
+
+    def behavior(self, name: str) -> EventBehaviorConfig | None:
+        if name not in {
+            "suspicious_looking",
+            "communicating",
+            "exchange_object",
+            "using_phone_cheat_sheet",
+        }:
+            return None
+        return getattr(self, name)
+
+
 class TrackingDebugConfig(BaseModel):
     enabled: bool = False
     log_every_n_frames: int = Field(default=10, gt=0)
@@ -153,8 +222,15 @@ class RuntimeProfile(BaseModel):
     diagnostics: DiagnosticsConfig
     seat_assignment: SeatAssignmentConfig = Field(default_factory=SeatAssignmentConfig)
     action_recognition: ActionRecognitionConfig = Field(default_factory=ActionRecognitionConfig)
+    event_detection: EventDetectionConfig = Field(default_factory=EventDetectionConfig)
     tracking_debug: TrackingDebugConfig = Field(default_factory=TrackingDebugConfig)
     ui: TrackingUiConfig = Field(default_factory=TrackingUiConfig)
+
+    @model_validator(mode="after")
+    def event_detection_requires_action_runtime(self) -> RuntimeProfile:
+        if self.event_detection.enabled and not self.action_recognition.enabled:
+            raise ValueError("event detection requires action recognition to be enabled")
+        return self
 
 
 def _yaml_mapping(path: Path) -> dict[str, object]:
@@ -228,6 +304,7 @@ def load_runtime_profile_from_paths(
         diagnostics=DiagnosticsConfig.model_validate(payload.get("diagnostics")),
         seat_assignment=SeatAssignmentConfig.model_validate(payload.get("seat_assignment") or {}),
         action_recognition=ActionRecognitionConfig.model_validate(action_payload),
+        event_detection=EventDetectionConfig.model_validate(payload.get("event_detection") or {}),
         tracking_debug=TrackingDebugConfig.model_validate(payload.get("tracking_debug") or {}),
         ui=TrackingUiConfig.model_validate(payload.get("ui") or {}),
     )

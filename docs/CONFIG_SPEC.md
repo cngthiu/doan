@@ -184,3 +184,53 @@ gap `2.5`×Seat width. The config validator fixes the R3 segment count, input
 size and clip duration to the audited checkpoint contract. See
 `docs/TSM_RUNTIME_CONTRACT.md` for formulas/sampling limits and
 `docs/PHASE6_5_ACTION_PERFORMANCE_REPORT.md` for the full ablation.
+
+## Phase 7 Event Detection
+
+Both runtime profiles contain a centralized but disabled `event_detection`
+block. A production-path pilot calibration now exists for S00–S04, but its
+refined Macro Event F1 is 0.1064 with 1.01 false events/minute and zero
+communicating true positives, so its searched values
+remain an evaluation artifact and are not copied into deployment defaults.
+Enabling an incomplete block fails validation, and event detection also
+requires action recognition to be enabled.
+
+After running `python -m app.cli.calibrate_events` on a versioned labeled
+development/validation manifest, review the event metrics before separately
+approving and copying the frozen `event_detection` mapping into a deployment
+profile. Calibration artifacts never enable production automatically:
+
+```yaml
+event_detection:
+  enabled: true
+  max_discontinuity_ms: 5000
+  dedup_temporal_iou: 0.30
+  dedup_max_gap_ms: 2000
+
+  suspicious_looking:
+    proposal_types: [SINGLE]
+    smoothing: {type: ema, alpha: CALIBRATED}
+    start_threshold: CALIBRATED
+    keep_threshold: CALIBRATED
+    min_active_ms: CALIBRATED
+    end_grace_ms: CALIBRATED
+    merge_gap_ms: CALIBRATED
+
+  communicating:
+    proposal_types: [PAIR]
+    # same calibrated fields
+  exchange_object:
+    proposal_types: [PAIR]
+    # same calibrated fields
+  using_phone_cheat_sheet:
+    proposal_types: [SINGLE]
+    # same calibrated fields
+```
+
+Validation requires `start_threshold > keep_threshold`, alpha in `(0,1]`,
+positive minimum duration, non-negative grace/merge durations and the exact
+Single/Pair routing above. Search accepts only `development` and `validation`
+partitions and rejects `final`, `final_test` and `test`. The pilot manifest is
+`docs/event_calibration/exam_dataset_pilot.yaml`; its generated artifacts are in
+`docs/event_calibration/artifacts/`. The example manifest remains schema
+documentation only and must not be used to select parameters.

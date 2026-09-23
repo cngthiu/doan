@@ -1,6 +1,6 @@
 # ExamGuard Current State
 
-Updated: 2026-09-22
+Updated: 2026-09-23
 
 ## Checkpoint
 
@@ -251,3 +251,51 @@ ACTION RECOGNITION: PASS (raw prediction runtime)
   `docs/PHASE6_5_ACTION_PERFORMANCE_REPORT.md`.
 
 Stop after Phase 6.5. Do not automatically begin Phase 7/Event generation.
+
+## Phase 7 — Event Aggregation
+
+```text
+PHASE 7 IMPLEMENTATION/UNIT/INTEGRATION GATE: PASSED
+PHASE 7 RUNTIME CALIBRATION: COMPLETED
+PHASE 7 EVENT-ACCURACY GATE: FAILED
+PHASE 7: NOT PASSED
+```
+
+- Added causal class-specific EMA, timestamp hysteresis and IDLE/CANDIDATE/
+  ACTIVE/COOLDOWN FSM state per stable proposal and behavior. Normal is excluded;
+  Single/Pair routing is enforced; one score spike cannot create an Event.
+- Added exact-actor temporal deduplication and idempotent internal persistence to
+  the existing Event/EventActor schema. AI events remain `PENDING_REVIEW`, use
+  `created_by=NULL`, append `AI_EVENT_CREATED`, and never create EventReview or
+  Evidence. One Pair interaction produces one Event with two EventActors.
+- Pause uses no wall clock. Tracking source timestamps expire discontinuous
+  proposal state. Seek resets every non-persisted smoother/FSM/cooldown/dedup
+  state; historical finalized events remain. Stop flushes ACTIVE/COOLDOWN at the
+  last valid evidence timestamp and discards insufficient CANDIDATE state.
+- Added production-path calibration CLI, pilot-manifest builder, explicit 2D Seat
+  neighbor graph support, JSONL export, actor/time GT alignment, raw metrics,
+  bounded deterministic search and Event evaluation. Raw predictions remain
+  file-only.
+- GPU collection ran YOLO11n → ByteTrack → Seat Identity → proposal/dynamic ROI →
+  TSM on S00–S04: 52.2407 minutes, 106 GT intervals and 20,210 predictions.
+  S05–S08 stayed excluded final test and were not inferred or evaluated.
+- Raw Macro F1 is 0.2332. A one-time refined bounded search produces Event
+  Precision/Recall/F1 0.1452/0.1047/0.1216, Macro Event F1 0.1064, 1.01 false
+  events/minute and zero
+  communicating Event F1. Calibration completed, but the empirical accuracy gate
+  failed; both production profiles remain disabled and final test was not run.
+- Root-cause diagnosis found no pair-normal examples in the 509-sample development
+  training set: all 218 normal samples contain one actor, while all 27 communicating
+  and 33 exchange samples contain two. Runtime same-row Pair proposals are therefore
+  top-1 communicating 89.0% of the time outside event intervals. Per-proposal
+  baseline normalization also fails (GT delta P50 −0.0241).
+- Reproducible artifacts are under `docs/event_calibration/artifacts/`; the
+  searched config is evaluation evidence with `enabled: false`, not a deployment
+  approval. The checkpoint was trained on S00–S04 windows, so this development
+  search is not an independent model-validation result.
+- Final backend verification and the full 42-point report are in
+  `docs/PHASE7_EVENT_AGGREGATION_REPORT.md`. Frontend code was unchanged and was
+  not rerun. Backend verification: 129 collected, 124 passed and 5
+  environment-gated tests skipped; Ruff and mypy (111 source files) pass.
+
+Stop after Phase 7. Do not automatically begin Phase 8.

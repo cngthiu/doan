@@ -21,8 +21,7 @@ export function AppShell() {
         <div className="brand-row">
           <span className="brand-badge small"><Icon name="shield" /></span>
           <div>
-            <strong>ExamGuard</strong>
-            <small>GIÁM SÁT KỲ THI</small>
+            <strong>GIÁM SÁT KỲ THI</strong>
           </div>
         </div>
         <div className="sidebar-user">
@@ -56,7 +55,7 @@ export function AppShell() {
           </details>
         </header>
         <main className="content-wrapper"><Outlet /></main>
-        <footer className="main-footer"><span><strong>ExamGuard</strong> · Giám sát phòng thi</span><span>Phiên bản 1.0</span></footer>
+        <footer className="main-footer"><span><strong>GIÁM SÁT KỲ THI</strong> · Giám sát phòng thi</span><span>Phiên bản 1.0</span></footer>
       </div>
     </div>
   )

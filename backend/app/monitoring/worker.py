@@ -11,6 +11,7 @@ from typing import Any
 
 from app.ai.action_recognition.adapter import ActionModelAdapter
 from app.ai.action_recognition.runtime import ActionRecognitionRuntime
+from app.ai.action_recognition.types import ActionPrediction
 from app.ai.detector.yolo import PersonDetector
 from app.ai.domain import (
     Detection,
@@ -21,6 +22,8 @@ from app.ai.domain import (
     normalize_bbox,
     suspicious_detection_overlaps,
 )
+from app.ai.event_aggregation.runtime import EventAggregationRuntime
+from app.ai.event_aggregation.types import AggregatedEvent
 from app.ai.seat_identity.assignment import SeatAssignmentEngine
 from app.ai.seat_identity.types import AssignmentState, SeatIdentityContext, TrackIdentity
 from app.ai.tracker.bytetrack import ByteTrackAdapter
@@ -53,6 +56,8 @@ class VideoAnalysisWorker:
         seat_assignment_factory: Callable[..., SeatAssignmentEngine] = SeatAssignmentEngine,
         action_model: ActionModelAdapter | None = None,
         action_runtime_factory: Callable[..., ActionRecognitionRuntime] = ActionRecognitionRuntime,
+        event_callback: Callable[[AggregatedEvent], None] | None = None,
+        event_runtime_factory: Callable[..., EventAggregationRuntime] = EventAggregationRuntime,
     ) -> None:
         self.session_id = session_id
         self.runtime_instance_id = runtime_instance_id or uuid.uuid4()
@@ -71,6 +76,17 @@ class VideoAnalysisWorker:
         self._seat_assignment_factory = seat_assignment_factory
         self._action_model = action_model
         self._action_runtime_factory = action_runtime_factory
+        if profile.event_detection.enabled and event_callback is None:
+            raise ValueError("Event detection is enabled without an AI Event persistence callback")
+        self._event_aggregator = (
+            event_runtime_factory(
+                session_id=session_id,
+                config=profile.event_detection,
+                emit=event_callback,
+            )
+            if profile.event_detection.enabled and event_callback is not None
+            else None
+        )
         self._buffer: LatestValueBuffer[FramePacket] = LatestValueBuffer()
         self._stop = threading.Event()
         self._paused = threading.Event()
@@ -124,7 +140,17 @@ class VideoAnalysisWorker:
             self._tracking_seq = 0
             self._pending_seek = (timestamp_ms, self._generation)
             self.clock.seek(timestamp_ms)
+            if self._event_aggregator is not None:
+                self._event_aggregator.reset(self._generation)
         self._buffer.clear()
+
+    def _consume_action_predictions(
+        self,
+        predictions: tuple[ActionPrediction, ...],
+        runtime_generation: int,
+    ) -> None:
+        if self._event_aggregator is not None:
+            self._event_aggregator.consume(predictions, runtime_generation)
 
     def stop(self, timeout: float = 5.0) -> bool:
         self._intentional_stop = True
@@ -239,6 +265,11 @@ class VideoAnalysisWorker:
                     identity_context=self.seat_identity_context,
                     model=self._action_model,
                     publish=self._publish,
+                    on_predictions=(
+                        self._consume_action_predictions
+                        if self._event_aggregator is not None
+                        else None
+                    ),
                 )
             tracker_instance_id = getattr(tracker, "instance_id", uuid.uuid4())
             if self._stop.is_set():
@@ -346,6 +377,8 @@ class VideoAnalysisWorker:
                     seats=seat_snapshot.seats,
                 )
                 self._publish(frame.as_message())
+                if self._event_aggregator is not None:
+                    self._event_aggregator.advance(packet.timestamp_ms, packet.generation)
                 if action_runtime is not None:
                     action_runtime.update(
                         packet.frame,
@@ -372,6 +405,11 @@ class VideoAnalysisWorker:
                     window = max(completed_at - completions[0], 1.0) if completions else 1.0
                     actual_fps = len(completions) / window
                     action_diagnostics = action_runtime.diagnostics() if action_runtime else None
+                    event_diagnostics = (
+                        self._event_aggregator.diagnostics()
+                        if self._event_aggregator is not None
+                        else None
+                    )
                     diagnostics = RuntimeDiagnostics(
                         session_id=self.session_id,
                         runtime_instance_id=self.runtime_instance_id,
@@ -559,6 +597,31 @@ class VideoAnalysisWorker:
                             if action_diagnostics
                             else None
                         ),
+                        candidate_fsms=(
+                            event_diagnostics.candidate_fsms if event_diagnostics else 0
+                        ),
+                        active_fsms=(event_diagnostics.active_fsms if event_diagnostics else 0),
+                        cooldown_fsms=(
+                            event_diagnostics.cooldown_fsms if event_diagnostics else 0
+                        ),
+                        events_created_total=(
+                            event_diagnostics.events_created_total if event_diagnostics else 0
+                        ),
+                        events_suppressed_total=(
+                            event_diagnostics.events_suppressed_total
+                            if event_diagnostics
+                            else 0
+                        ),
+                        events_deduplicated_total=(
+                            event_diagnostics.events_deduplicated_total
+                            if event_diagnostics
+                            else 0
+                        ),
+                        per_behavior_event_count=(
+                            event_diagnostics.per_behavior_event_count
+                            if event_diagnostics
+                            else None
+                        ),
                     )
                     self._publish(diagnostics.as_message())
                     last_diagnostics = completed_at
@@ -567,6 +630,8 @@ class VideoAnalysisWorker:
         finally:
             if action_runtime is not None and not action_runtime.close():
                 logger.error("Action runtime did not stop cleanly for session=%s", self.session_id)
+            if self._event_aggregator is not None:
+                self._event_aggregator.stop()
 
     def _log_tracking_debug(
         self,

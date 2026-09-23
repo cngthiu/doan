@@ -40,6 +40,7 @@ class SeatIdentityContext:
     session_id: uuid.UUID
     seats: tuple[SeatDefinition, ...]
     bindings: tuple[SeatCandidateBinding, ...]
+    adjacent_seat_pairs: tuple[tuple[uuid.UUID, uuid.UUID], ...] = ()
 
     @classmethod
     def empty(cls, session_id: uuid.UUID) -> SeatIdentityContext:

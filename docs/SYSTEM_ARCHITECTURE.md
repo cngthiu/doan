@@ -80,7 +80,9 @@ Seat-Stable Identity → Proposal Builder → R3 ROI → 4-second timestamp buff
                      → raw five-class ActionPrediction
 ```
 Single proposals require an ASSIGNED SessionCandidate. Pair proposals require two
-ASSIGNED candidates in geometrically adjacent left/right Seats. Proposal IDs use
+ASSIGNED candidates in adjacent Seats. A validated explicit 2D room-layout graph
+is used when the immutable runtime context supplies one; otherwise the legacy
+geometry-derived left/right-row fallback remains. Proposal IDs use
 SessionCandidate UUIDs, not ephemeral Track IDs. A queue of capacity one keeps
 the latest action request; ROI preparation and TSM inference run in separate
 background threads, preserving the tracking worker's latest-frame path.
@@ -92,9 +94,53 @@ that GPU. Pause cannot advance scheduling by wall clock; seek resets buffers,
 ready/in-flight state and last-prediction timestamps; stop joins both action
 threads. The R3 model registry shares one checkpoint/device/precision instance.
 
-The Phase 6 output is diagnostic model evidence only. Smoothing, event
-thresholds/state machine, Event creation, Evidence and conduct conclusions are
-future work and are not connected to ActionPrediction.
+The raw ActionPrediction remains available for diagnostics and offline
+calibration. When both action recognition and a calibrated event profile are
+explicitly enabled, Phase 7 connects it to the aggregation path below. No raw
+prediction is written to PostgreSQL.
+
+The pilot calibration loader builds the explicit graph from versioned Seat
+layout metadata, never from event labels. The live database context does not
+yet persist that graph and therefore still uses the fallback; this is a known
+deployment gap and one reason event detection remains disabled.
+
+## Event aggregation runtime (Phase 7 implementation)
+
+```text
+ActionPrediction → causal per-class EMA → hysteresis FSM
+                 → exact-actor temporal dedup → AI Event + EventActor
+```
+
+There is one in-memory FSM per stable `proposal_id + behavior`. `SINGLE` routes
+only to suspicious-looking and phone/cheat-sheet; `PAIR` routes only to
+communicating and exchange-object. Normal is never consumed by the Event layer.
+FSM states are IDLE/CANDIDATE/ACTIVE/COOLDOWN and advance only with source-video
+timestamps. Tracking timestamps expire inactive proposal state; pause provides
+no timestamp and therefore cannot advance it. Seek clears every non-persisted
+smoother/FSM/dedup state in the new runtime generation. Stop closes ACTIVE or
+COOLDOWN state at its last valid evidence timestamp and discards an insufficient
+CANDIDATE.
+
+Finalized events are deduplicated only for the same behavior and exact
+SessionCandidate actor set when their temporal IoU or configured short gap
+qualifies. Persistence uses a deterministic semantic fingerprint as the event
+code, making a repeated callback idempotent without adding a database unique
+constraint. AI events use `source=AI`, `status=PENDING_REVIEW`, `created_by=NULL`,
+and one EventActor per SessionCandidate. Pair interactions therefore create one
+Event with two actors. Event creation also appends an `AI_EVENT_CREATED` audit
+row. Review, Evidence, Appeal, reporting, Head Pose and object detection are not
+part of this runtime.
+
+The implementation is intentionally disabled in both profiles. S00–S04 pilot
+calibration produced 20,210 real dynamic-ROI predictions, but refined Macro
+Event F1 is 0.1064 and communicating has zero true-positive Events. The
+checkpoint's 509-sample development training split contains no Pair-normal crop:
+all 218 normal samples have one actor, whereas all communicating/exchange samples
+have two. Runtime Pair geometry is therefore a learned class shortcut rather
+than reliable interaction evidence. This is an upstream data/model limitation;
+FSM thresholds must not be presented as a fix. `app.cli.calibrate_events`
+remains the production-path collector/search/evaluator, and S05–S08 remain an
+untouched final-test partition.
 
 ## Frontend synchronization
 ```text
@@ -113,6 +159,8 @@ Publish about 2 Hz: source FPS, analysis FPS, detector/tracker/pipeline latency,
 dropped frames, GPU/VRAM if available, CPU and RAM. Action diagnostics add
 ready/in-flight/replaced/expired requests, Single/Pair prediction rates and
 interval mean/P95/max, prediction age, batch count and TSM forward latency.
+Event diagnostics add CANDIDATE/ACTIVE/COOLDOWN FSM counts, created/suppressed/
+deduplicated totals and per-behavior event counts.
 Do not crash if NVML is unavailable.
 
 ## Docker services

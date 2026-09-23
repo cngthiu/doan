@@ -78,6 +78,16 @@ action_recognition:
     row_tolerance_ratio: 0.75
     max_horizontal_gap_ratio: 2.5
 
+# Pilot production-path calibration completed on S00-S04, but refined Event
+# Macro F1 was only 0.1064 with 1.01 false events/minute and zero communicating
+# true positives. Keep disabled; the selected
+# search artifact is evaluation evidence, not an approved deployment profile.
+event_detection:
+  enabled: false
+  max_discontinuity_ms: 5000
+  dedup_temporal_iou: 0.30
+  dedup_max_gap_ms: 2000
+
 tracking_debug:
   enabled: false
   log_every_n_frames: 10

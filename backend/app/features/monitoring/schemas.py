@@ -133,6 +133,13 @@ class DiagnosticsMessage(BaseModel):
     action_prediction_age_ms_p95: float | None = Field(default=None, ge=0)
     tsm_forward_ms_mean: float | None = Field(default=None, ge=0)
     tsm_forward_ms_p95: float | None = Field(default=None, ge=0)
+    candidate_fsms: int = Field(default=0, ge=0)
+    active_fsms: int = Field(default=0, ge=0)
+    cooldown_fsms: int = Field(default=0, ge=0)
+    events_created_total: int = Field(default=0, ge=0)
+    events_suppressed_total: int = Field(default=0, ge=0)
+    events_deduplicated_total: int = Field(default=0, ge=0)
+    per_behavior_event_count: dict[str, int] | None = None
     profile: str
 
 

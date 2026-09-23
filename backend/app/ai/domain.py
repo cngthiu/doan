@@ -161,6 +161,13 @@ class RuntimeDiagnostics:
     action_prediction_age_ms_p95: float | None = None
     tsm_forward_ms_mean: float | None = None
     tsm_forward_ms_p95: float | None = None
+    candidate_fsms: int = 0
+    active_fsms: int = 0
+    cooldown_fsms: int = 0
+    events_created_total: int = 0
+    events_suppressed_total: int = 0
+    events_deduplicated_total: int = 0
+    per_behavior_event_count: dict[str, int] | None = None
 
     def as_message(self) -> dict[str, Any]:
         message = asdict(self)

@@ -6,9 +6,11 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.ai.event_aggregation.types import AggregatedEvent
 from app.api.v1.router import api_router
 from app.core.errors import ApiError, error_payload
 from app.db.session import get_session_factory
+from app.features.events.service import persist_ai_event
 from app.features.monitoring.router import websocket_router
 from app.features.monitoring.service import terminal_database_update
 from app.monitoring.manager import MonitoringRuntimeManager, RuntimeState
@@ -23,9 +25,17 @@ def _persist_terminal_state(
         terminal_database_update(db, session_id, state)
 
 
+def _persist_ai_event(event: AggregatedEvent) -> None:
+    with get_session_factory()() as db:
+        persist_ai_event(db, event)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    manager = MonitoringRuntimeManager(terminal_callback=_persist_terminal_state)
+    manager = MonitoringRuntimeManager(
+        terminal_callback=_persist_terminal_state,
+        event_callback=_persist_ai_event,
+    )
     application.state.monitoring_runtime = manager
     try:
         yield

@@ -164,6 +164,42 @@ def test_adjacency_only_connects_consecutive_seats_in_same_row() -> None:
     )
 
 
+def test_explicit_2d_neighbor_graph_overrides_perspective_row_inference() -> None:
+    seats = tuple(
+        SeatDefinition(uuid.uuid4(), code, bbox)
+        for code, bbox in (
+            ("A1", (0.15, 0.17, 0.29, 0.50)),
+            ("A2", (0.36, 0.16, 0.58, 0.42)),
+            ("A3", (0.62, 0.11, 0.80, 0.39)),
+            ("B1", (0.00, 0.21, 0.31, 0.68)),
+            ("B2", (0.40, 0.23, 0.68, 0.58)),
+            ("B3", (0.70, 0.16, 0.98, 0.51)),
+        )
+    )
+    explicit = (
+        (seats[0].id, seats[1].id),
+        (seats[1].id, seats[2].id),
+        (seats[3].id, seats[4].id),
+        (seats[4].id, seats[5].id),
+        (seats[0].id, seats[3].id),
+        (seats[1].id, seats[4].id),
+        (seats[2].id, seats[5].id),
+    )
+    context = SeatIdentityContext(uuid.uuid4(), seats, (), explicit)
+    runtime = ActionRecognitionRuntime(
+        session_id=context.session_id,
+        runtime_instance_id=uuid.uuid4(),
+        config=action_config(),
+        identity_context=context,
+        model=FakeActionModel(),  # type: ignore[arg-type]
+        publish=lambda _: None,
+    )
+    try:
+        assert runtime._adjacent_pairs == explicit
+    finally:
+        assert runtime.close()
+
+
 def test_proposal_ids_are_candidate_stable_and_unassigned_tracks_are_excluded() -> None:
     left_seat, right_seat = uuid.uuid4(), uuid.uuid4()
     left_candidate, right_candidate = uuid.uuid4(), uuid.uuid4()
@@ -407,9 +443,7 @@ def scheduler_clip(
     timestamp_ms: int,
 ) -> ActionClip:
     candidate_ids = (
-        (uuid.uuid4(),)
-        if proposal_type is ProposalType.SINGLE
-        else (uuid.uuid4(), uuid.uuid4())
+        (uuid.uuid4(),) if proposal_type is ProposalType.SINGLE else (uuid.uuid4(), uuid.uuid4())
     )
     proposal = ActionProposal(
         proposal_id=proposal_id,

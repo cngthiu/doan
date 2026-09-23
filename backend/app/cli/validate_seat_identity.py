@@ -73,6 +73,23 @@ def load_context(
         )
         for seat in seats
     )
+    seats_by_code = {seat.code: seat for seat in seats}
+    adjacent_pairs: list[tuple[uuid.UUID, uuid.UUID]] = []
+    seen_pairs: set[frozenset[uuid.UUID]] = set()
+    for raw_pair in clip.get("adjacent_seat_pairs", []):
+        if not isinstance(raw_pair, list | tuple) or len(raw_pair) != 2:
+            raise ValueError("adjacent_seat_pairs entries must contain exactly two seat codes")
+        left_code, right_code = (str(value) for value in raw_pair)
+        try:
+            left = seats_by_code[left_code]
+            right = seats_by_code[right_code]
+        except KeyError as exc:
+            raise ValueError(f"adjacent pair references unknown seat: {exc.args[0]}") from exc
+        key = frozenset((left.id, right.id))
+        if left.id == right.id or key in seen_pairs:
+            raise ValueError(f"invalid or duplicate adjacent pair: {left_code}, {right_code}")
+        seen_pairs.add(key)
+        adjacent_pairs.append((left.id, right.id))
     actors = [
         ExpectedActor(
             seat_code=str(item["seat_code"]),
@@ -85,6 +102,7 @@ def load_context(
             session_id=_uuid(uuid.NAMESPACE_URL, f"{clip_id}/session"),
             seats=seats,
             bindings=bindings,
+            adjacent_seat_pairs=tuple(adjacent_pairs),
         ),
         actors,
     )
@@ -298,9 +316,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if not source.is_absolute():
             clip["source"] = str((args.manifest.parent / source).resolve())
         clips.append(validate_clip(clip, profile=profile, sample_fps=args.sample_fps))
-    stabilization_delays = [
-        value for clip in clips for value in clip.pop("_stabilization_delays")
-    ]
+    stabilization_delays = [value for clip in clips for value in clip.pop("_stabilization_delays")]
     recovery_delays = [value for clip in clips for value in clip.pop("_recovery_delays")]
     assignment_latencies = [
         value for clip in clips for value in clip.pop("_seat_assignment_latencies")
@@ -335,8 +351,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 else None
             ),
             "wrong_seat_rate": (
-                (totals["wrong_actor_samples"] + totals["false_extra_assignments"])
-                / evaluated
+                (totals["wrong_actor_samples"] + totals["false_extra_assignments"]) / evaluated
                 if evaluated
                 else None
             ),
@@ -360,9 +375,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "p95_recovery_delay_ms": percentile(recovery_delays, 0.95),
             "seat_assignment_ms": {
-                "mean": (
-                    statistics.fmean(assignment_latencies) if assignment_latencies else None
-                ),
+                "mean": (statistics.fmean(assignment_latencies) if assignment_latencies else None),
                 "p95": percentile(assignment_latencies, 0.95),
             },
         },

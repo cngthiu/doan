@@ -24,7 +24,7 @@ from app.ai.action_recognition.roi import (
     extract_training_roi_profiled,
 )
 from app.ai.action_recognition.scheduler import ActionScheduler
-from app.ai.action_recognition.types import ActionClip, ProposalType
+from app.ai.action_recognition.types import ActionClip, ActionPrediction, ProposalType
 from app.ai.domain import Track
 from app.ai.seat_identity.types import SeatIdentityContext
 from app.monitoring.config import ActionRecognitionConfig, ActionRoiGeometryConfig
@@ -101,13 +101,15 @@ class ActionRecognitionRuntime:
         identity_context: SeatIdentityContext,
         model: ActionModelAdapter,
         publish: Callable[[dict[str, Any]], None],
+        on_predictions: Callable[[tuple[ActionPrediction, ...], int], None] | None = None,
     ) -> None:
         self.session_id = session_id
         self.runtime_instance_id = runtime_instance_id
         self.config = config
         self._model: ActionPredictor = model
         self._publish = publish
-        self._adjacent_pairs = adjacent_seat_pairs(
+        self._on_predictions = on_predictions
+        self._adjacent_pairs = identity_context.adjacent_seat_pairs or adjacent_seat_pairs(
             identity_context.seats,
             row_tolerance_ratio=config.adjacency.row_tolerance_ratio,
             max_gap_ratio=config.adjacency.max_horizontal_gap_ratio,
@@ -283,9 +285,7 @@ class ActionRecognitionRuntime:
         self._timing_samples["roi_prepare_ms"].append(profile.total_ms)
         self._timing_samples["roi_crop_ms"].append(profile.crop_ms)
         self._timing_samples["roi_resize_ms"].append(profile.resize_ms)
-        self._timing_samples["roi_color_conversion_ms"].append(
-            profile.color_conversion_ms
-        )
+        self._timing_samples["roi_color_conversion_ms"].append(profile.color_conversion_ms)
 
     def _put_latest(self, target: queue.Queue[Any], item: Any) -> None:
         try:
@@ -386,9 +386,7 @@ class ActionRecognitionRuntime:
                 action_batch_size_p95=self._p95(self._batch_samples),
                 action_queue_depth=self._frame_queue.qsize() + self._inference_queue.qsize(),
                 stale_action_requests_dropped=(
-                    self._queue_drops
-                    + self._stale_drops
-                    + scheduler.stale_drops
+                    self._queue_drops + self._stale_drops + scheduler.stale_drops
                 ),
                 action_device=self._model.device,
                 scheduler_ready_proposals=scheduler.ready_proposals,
@@ -407,8 +405,7 @@ class ActionRecognitionRuntime:
                 action_prediction_age_ms_mean=self._mean(self._prediction_age_samples),
                 action_prediction_age_ms_p95=self._p95(self._prediction_age_samples),
                 timing_profiles={
-                    name: self._summary(samples)
-                    for name, samples in self._timing_samples.items()
+                    name: self._summary(samples) for name, samples in self._timing_samples.items()
                 },
             )
 
@@ -478,9 +475,7 @@ class ActionRecognitionRuntime:
                 self._inference_samples.append(result.inference_ms)
                 self._pipeline_samples.append(pipeline_ms)
                 self._batch_samples.append(float(len(batch.clips)))
-                self._timing_samples["tensor_assembly_ms"].append(
-                    result.tensor_assembly_ms
-                )
+                self._timing_samples["tensor_assembly_ms"].append(result.tensor_assembly_ms)
                 self._timing_samples["input_resize_ms"].append(result.resize_ms)
                 self._timing_samples["normalization_ms"].append(result.normalization_ms)
                 self._timing_samples["h2d_ms"].append(result.h2d_ms)
@@ -504,6 +499,20 @@ class ActionRecognitionRuntime:
                     "predictions": [item.as_dict(R3_CLASS_NAMES) for item in result.predictions],
                 }
             )
+            if self._on_predictions is not None:
+                try:
+                    self._on_predictions(result.predictions, batch.runtime_generation)
+                except Exception as error:
+                    self._publish(
+                        {
+                            "type": "action_error",
+                            "session_id": str(self.session_id),
+                            "runtime_instance_id": str(self.runtime_instance_id),
+                            "runtime_generation": batch.runtime_generation,
+                            "timestamp_ms": batch.timestamp_ms,
+                            "error": f"Event aggregation/persistence failure: {error}",
+                        }
+                    )
             with self._lock:
                 self._model_inflight = False
                 self._inflight = False

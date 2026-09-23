@@ -77,6 +77,14 @@ action_recognition:
     row_tolerance_ratio: 0.75
     max_horizontal_gap_ratio: 2.5
 
+# GTX1650 pilot calibration failed the event-accuracy gate. This profile also
+# lacks an RTX3060 production-path performance/calibration run; keep disabled.
+event_detection:
+  enabled: false
+  max_discontinuity_ms: 5000
+  dedup_temporal_iou: 0.30
+  dedup_max_gap_ms: 2000
+
 tracking_debug:
   enabled: false
   log_every_n_frames: 10
