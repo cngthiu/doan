@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH=/app/.venv/bin:$PATH
 
 WORKDIR /app
-
+ENV PYTHONPATH=/app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg curl fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \

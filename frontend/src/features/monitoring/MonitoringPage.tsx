@@ -29,7 +29,7 @@ import {
 } from './api'
 import { TrackingCanvas } from './TrackingCanvas'
 import { isTrackingTimestampAligned, TrackingBuffer } from './trackingBuffer'
-import type { MonitoringMessage, MonitoringStatus, RuntimeDiagnostics, SeatRuntime, TrackingTrack } from './types'
+import type { ActionPredictionMessage, MonitoringMessage, MonitoringStatus, RuntimeDiagnostics, SeatRuntime, TrackingTrack } from './types'
 import { useMonitoringSocket } from './useMonitoringSocket'
 
 const inactiveStatus: MonitoringStatus = {
@@ -60,6 +60,8 @@ export function MonitoringPage() {
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null)
   const [activeTracks, setActiveTracks] = useState<TrackingTrack[]>([])
   const [activeSeats, setActiveSeats] = useState<SeatRuntime[]>([])
+  const [latestActions, setLatestActions] = useState<ActionPredictionMessage | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [synchronizing, setSynchronizing] = useState(false)
   const [overlayRevision, setOverlayRevision] = useState(0)
   const [confirmStop, setConfirmStop] = useState(false)
@@ -87,7 +89,7 @@ export function MonitoringPage() {
   useEffect(() => { loadSessions(debouncedSessionQuery) }, [debouncedSessionQuery, loadSessions])
 
   useEffect(() => {
-    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setDiagnostics(null); setSynchronizing(false); synchronizingRef.current = false
+    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setDiagnostics(null); setLatestActions(null); setActionError(null); setSynchronizing(false); synchronizingRef.current = false
     setOverlayRevision((value) => value + 1)
     if (!selectedId) { setRuntime(inactiveStatus); return }
     getMonitoringStatus(selectedId)
@@ -106,7 +108,7 @@ export function MonitoringPage() {
       const inserted = trackingBuffer.current.insert(message)
       if (!inserted.accepted) return
       if (inserted.reset) {
-        setActiveTracks([]); setActiveSeats([])
+        setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null)
         setOverlayRevision((value) => value + 1)
       }
       synchronizingRef.current = false
@@ -120,12 +122,22 @@ export function MonitoringPage() {
     } else if (message.type === 'diagnostics') {
       const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
       if (!active.accepted) return
-      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setOverlayRevision((value) => value + 1) }
+      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setOverlayRevision((value) => value + 1) }
       setDiagnostics(message)
-    } else {
+    } else if (message.type === 'action_prediction') {
       const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
       if (!active.accepted) return
       if (active.reset) { setActiveTracks([]); setActiveSeats([]); setOverlayRevision((value) => value + 1) }
+      setLatestActions(message); setActionError(null)
+    } else if (message.type === 'action_error') {
+      const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
+      if (!active.accepted) return
+      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setOverlayRevision((value) => value + 1) }
+      setActionError(message.error)
+    } else {
+      const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
+      if (!active.accepted) return
+      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setOverlayRevision((value) => value + 1) }
       setRuntime((current) => ({ ...current, state: message.state, error: message.error }))
       synchronizingRef.current = message.synchronizing
       setSynchronizing(message.synchronizing)
@@ -135,6 +147,8 @@ export function MonitoringPage() {
         setSynchronizing(false)
         setActiveTracks([])
         setActiveSeats([])
+        setLatestActions(null)
+        setActionError(null)
         setOverlayRevision((value) => value + 1)
         setError('Không thể khởi tạo hoặc duy trì AI.')
         setErrorDetail(message.error)
@@ -182,7 +196,7 @@ export function MonitoringPage() {
       setError('Trình duyệt không thể bắt đầu phát video.')
       return
     }
-    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
     const status = await perform(() => startMonitoring(selected.id, timestampMs))
     if (!status) {
       video.pause()
@@ -191,6 +205,8 @@ export function MonitoringPage() {
       setSynchronizing(false)
       setActiveTracks([])
       setActiveSeats([])
+      setLatestActions(null)
+      setActionError(null)
       setOverlayRevision((value) => value + 1)
     }
   }
@@ -209,20 +225,20 @@ export function MonitoringPage() {
 
   const onVideoSeeked = (video: HTMLVideoElement) => {
     if (!runtimeActive || !canOperate) return
-    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
     void perform(() => seekMonitoring(selectedId, Math.round(video.currentTime * 1000)))
   }
 
   const onVideoSeeking = () => {
     if (!runtimeActive || !canOperate) return
-    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
   }
 
   const stop = async () => {
     suppressVideoEvents.current = true
     videoRef.current?.pause()
     const status = await perform(() => stopMonitoring(selectedId))
-    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setSynchronizing(false); synchronizingRef.current = false; setOverlayRevision((value) => value + 1)
+    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(false); synchronizingRef.current = false; setOverlayRevision((value) => value + 1)
     if (status) setSessions((items) => items.map((item) => item.id === selectedId ? { ...item, status: 'COMPLETED' } : item))
     window.setTimeout(() => { suppressVideoEvents.current = false }, 0)
   }
@@ -252,7 +268,8 @@ export function MonitoringPage() {
         }) : <p className="secondary-text">Chưa phân công thí sinh vào chỗ ngồi.</p>}</div>{unidentifiedCount > 0 && <p className="unidentified-count">Người chưa xác định: <strong>{unidentifiedCount}</strong></p>}</aside>
       </section>
       <div className="monitoring-status-bar"><span className={socketConnected && runtime.state === 'RUNNING' ? 'online' : ''}>● {socketConnected ? 'AI trực tuyến' : 'AI ngoại tuyến'}</span><span>Video {formatFps(selected.video.fps)}</span><span>AI {metric(diagnostics?.analysis_fps, ' FPS')}</span><PermissionGate permission={permissions.diagnosticsRead}><><span>Độ trễ {metric(diagnostics?.pipeline_ms, ' ms')}</span><span>Sai lệch {metric(diagnostics?.analysis_lag_ms, ' ms')}</span></></PermissionGate></div>
-      {debugOverlay && <details className="card diagnostics-drawer"><summary>Chẩn đoán runtime</summary><div className="diagnostics-grid"><span>Runtime ID <strong>{diagnostics?.runtime_instance_id ?? runtime.runtime_instance_id ?? '—'}</strong></span><span>Generation <strong>{diagnostics?.runtime_generation ?? runtime.runtime_generation ?? '—'}</strong></span><span>Worker ID <strong>{diagnostics?.worker_instance_id ?? runtime.worker_instance_id ?? '—'}</strong></span><span>Tracker ID <strong>{diagnostics?.tracker_instance_id ?? runtime.tracker_instance_id ?? '—'}</strong></span><span>Tracking seq <strong>{diagnostics?.tracking_seq ?? runtime.tracking_seq}</strong></span><span>Latest AI timestamp <strong>{diagnostics ? `${diagnostics.latest_timestamp_ms} ms` : '—'}</strong></span><span>Raw detections <strong>{diagnostics?.raw_detection_count ?? '—'}</strong></span><span>Active tracks <strong>{diagnostics?.active_track_count ?? '—'}</strong></span><span>Assigned / tentative / unassigned <strong>{diagnostics ? `${diagnostics.assigned_tracks} / ${diagnostics.tentative_tracks} / ${diagnostics.unassigned_tracks}` : '—'}</strong></span><span>Occupied / grace / empty <strong>{diagnostics ? `${diagnostics.occupied_seats} / ${diagnostics.grace_seats} / ${diagnostics.empty_seats}` : '—'}</strong></span><span>Switches / recoveries <strong>{diagnostics ? `${diagnostics.seat_switches} / ${diagnostics.identity_recoveries}` : '—'}</strong></span><span>Source FPS <strong>{metric(diagnostics?.source_fps)}</strong></span><span>Analysis FPS <strong>{metric(diagnostics?.analysis_fps)}</strong></span><span>Target FPS <strong>{metric(diagnostics?.target_analysis_fps)}</strong></span><span>Detector <strong>{metric(diagnostics?.detector_ms, ' ms')}</strong></span><span>Tracker <strong>{metric(diagnostics?.tracker_ms, ' ms')}</strong></span><span>Seat assignment <strong>{metric(diagnostics?.seat_assignment_ms, ' ms')}</strong></span><span>Pipeline <strong>{metric(diagnostics?.pipeline_ms, ' ms')}</strong></span><span>Analysis lag <strong>{metric(diagnostics?.analysis_lag_ms, ' ms')}</strong></span><span>GPU <strong>{metric(diagnostics?.gpu_util_pct, '%')}</strong></span><span>VRAM <strong>{metric(diagnostics?.vram_used_mb, ' MB')}</strong></span><span>CPU <strong>{metric(diagnostics?.cpu_util_pct, '%')}</strong></span><span>RAM <strong>{metric(diagnostics?.ram_used_mb, ' MB')}</strong></span><span>Dropped <strong>{diagnostics?.dropped_analysis_frames ?? '—'}</strong></span><span>Queue <strong>{diagnostics?.queue_size ?? '—'}</strong></span><span>Profile <strong>{diagnostics?.profile ?? runtime.profile ?? '—'}</strong></span></div></details>}
+      {debugOverlay && <details className="card diagnostics-drawer"><summary>Chẩn đoán runtime</summary><div className="diagnostics-grid"><span>Runtime ID <strong>{diagnostics?.runtime_instance_id ?? runtime.runtime_instance_id ?? '—'}</strong></span><span>Generation <strong>{diagnostics?.runtime_generation ?? runtime.runtime_generation ?? '—'}</strong></span><span>Worker ID <strong>{diagnostics?.worker_instance_id ?? runtime.worker_instance_id ?? '—'}</strong></span><span>Tracker ID <strong>{diagnostics?.tracker_instance_id ?? runtime.tracker_instance_id ?? '—'}</strong></span><span>Tracking seq <strong>{diagnostics?.tracking_seq ?? runtime.tracking_seq}</strong></span><span>Latest AI timestamp <strong>{diagnostics ? `${diagnostics.latest_timestamp_ms} ms` : '—'}</strong></span><span>Raw detections <strong>{diagnostics?.raw_detection_count ?? '—'}</strong></span><span>Active tracks <strong>{diagnostics?.active_track_count ?? '—'}</strong></span><span>Assigned / tentative / unassigned <strong>{diagnostics ? `${diagnostics.assigned_tracks} / ${diagnostics.tentative_tracks} / ${diagnostics.unassigned_tracks}` : '—'}</strong></span><span>Occupied / grace / empty <strong>{diagnostics ? `${diagnostics.occupied_seats} / ${diagnostics.grace_seats} / ${diagnostics.empty_seats}` : '—'}</strong></span><span>Switches / recoveries <strong>{diagnostics ? `${diagnostics.seat_switches} / ${diagnostics.identity_recoveries}` : '—'}</strong></span><span>Source FPS <strong>{metric(diagnostics?.source_fps)}</strong></span><span>Analysis FPS <strong>{metric(diagnostics?.analysis_fps)}</strong></span><span>Target FPS <strong>{metric(diagnostics?.target_analysis_fps)}</strong></span><span>Detector <strong>{metric(diagnostics?.detector_ms, ' ms')}</strong></span><span>Tracker <strong>{metric(diagnostics?.tracker_ms, ' ms')}</strong></span><span>Seat assignment <strong>{metric(diagnostics?.seat_assignment_ms, ' ms')}</strong></span><span>Pipeline <strong>{metric(diagnostics?.pipeline_ms, ' ms')}</strong></span><span>Analysis lag <strong>{metric(diagnostics?.analysis_lag_ms, ' ms')}</strong></span><span>Action buffers / ROI frames <strong>{diagnostics ? `${diagnostics.active_action_buffers} / ${diagnostics.buffered_roi_frames}` : '—'}</strong></span><span>Latest raw action <strong>{latestActions ? `${latestActions.predictions.length} @ ${latestActions.timestamp_ms} ms` : '—'}</strong></span><span>Action error <strong>{actionError ?? '—'}</strong></span><span>GPU <strong>{metric(diagnostics?.gpu_util_pct, '%')}</strong></span><span>VRAM <strong>{metric(diagnostics?.vram_used_mb, ' MB')}</strong></span><span>CPU <strong>{metric(diagnostics?.cpu_util_pct, '%')}</strong></span><span>RAM <strong>{metric(diagnostics?.ram_used_mb, ' MB')}</strong></span><span>Dropped <strong>{diagnostics?.dropped_analysis_frames ?? '—'}</strong></span><span>Queue <strong>{diagnostics?.queue_size ?? '—'}</strong></span><span>Profile <strong>{diagnostics?.profile ?? runtime.profile ?? '—'}</strong></span></div></details>}
+      {debugOverlay && <details className="card diagnostics-drawer"><summary>Chẩn đoán Action Recognition</summary><div className="diagnostics-grid"><span>Single / Pair <strong>{diagnostics ? `${diagnostics.active_single_proposals} / ${diagnostics.active_pair_proposals}` : '—'}</strong></span><span>Scheduler ready / in-flight <strong>{diagnostics ? `${diagnostics.scheduler_ready_proposals} / ${diagnostics.scheduler_in_flight_proposals}` : '—'}</strong></span><span>Replaced / expired <strong>{diagnostics ? `${diagnostics.replaced_ready_requests} / ${diagnostics.expired_ready_requests}` : '—'}</strong></span><span>Predictions total / batches <strong>{diagnostics ? `${diagnostics.action_predictions_total} / ${diagnostics.action_batches_total}` : '—'}</strong></span><span>Single / Pair predictions/s <strong>{diagnostics ? `${metric(diagnostics.single_predictions_per_second)} / ${metric(diagnostics.pair_predictions_per_second)}` : '—'}</strong></span><span>Single interval mean / P95 <strong>{diagnostics ? `${metric(diagnostics.single_prediction_interval_ms_mean)} / ${metric(diagnostics.single_prediction_interval_ms_p95)} ms` : '—'}</strong></span><span>Pair interval mean / P95 <strong>{diagnostics ? `${metric(diagnostics.pair_prediction_interval_ms_mean)} / ${metric(diagnostics.pair_prediction_interval_ms_p95)} ms` : '—'}</strong></span><span>Prediction age mean / P95 <strong>{diagnostics ? `${metric(diagnostics.action_prediction_age_ms_mean)} / ${metric(diagnostics.action_prediction_age_ms_p95)} ms` : '—'}</strong></span><span>Preprocess mean / P95 <strong>{diagnostics ? `${metric(diagnostics.tsm_preprocess_ms_mean)} / ${metric(diagnostics.tsm_preprocess_ms_p95)} ms` : '—'}</strong></span><span>Forward mean / P95 <strong>{diagnostics ? `${metric(diagnostics.tsm_forward_ms_mean)} / ${metric(diagnostics.tsm_forward_ms_p95)} ms` : '—'}</strong></span><span>TSM mean / P95 <strong>{diagnostics ? `${metric(diagnostics.tsm_inference_ms_mean)} / ${metric(diagnostics.tsm_inference_ms_p95)} ms` : '—'}</strong></span><span>Pipeline mean / P95 <strong>{diagnostics ? `${metric(diagnostics.action_pipeline_ms_mean)} / ${metric(diagnostics.action_pipeline_ms_p95)} ms` : '—'}</strong></span><span>Batch mean / P95 <strong>{diagnostics ? `${metric(diagnostics.action_batch_size_mean)} / ${metric(diagnostics.action_batch_size_p95)}` : '—'}</strong></span><span>Queue depth / stale dropped <strong>{diagnostics ? `${diagnostics.action_queue_depth} / ${diagnostics.stale_action_requests_dropped}` : '—'}</strong></span><span>Device <strong>{diagnostics?.action_device ?? '—'}</strong></span><span>Top raw prediction <strong>{latestActions?.predictions[0] ? `${latestActions.predictions[0].predicted_class} (${metric(latestActions.predictions[0].confidence)})` : '—'}</strong></span></div></details>}
     </>}
     <ConfirmDialog open={confirmStop} title="Kết thúc giám sát?" description="Phiên thi sẽ chuyển sang Đã kết thúc. Hãy chắc chắn video và quá trình giám sát đã hoàn tất." confirmLabel="Kết thúc giám sát" danger onCancel={() => setConfirmStop(false)} onConfirm={() => { setConfirmStop(false); void stop() }} />
   </div>

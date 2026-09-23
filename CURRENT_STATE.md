@@ -74,8 +74,10 @@ TRACKING STATUS: PASSED ON THE AVAILABLE MINI VALIDATION SET
   must not be used as permanent candidate identity.
 - Final CPU realtime probe: target 12.5 FPS, actual 12.50 FPS, lag mean/P95/max
   23.53/27/111 ms, queue peak 1, and clean stop.
-- NVIDIA host-driver access remains unavailable. GPU/VRAM and browser-to-CUDA
-  validation are not claimed.
+- Native host `nvidia-smi` remains unavailable because `/dev/nvidia*` is not
+  created, but NVIDIA Container Toolkit GPU access now works. Phase 6 records
+  containerized CUDA/VRAM measurements below; browser/live-scheduler lag is
+  still not claimed.
 - Supervisor-walk and complete stand/sit source clips are not available in the current
   independent uploads and remain coverage gaps, so this is not a universal accuracy
   claim.
@@ -173,5 +175,79 @@ IMPLEMENTATION/UNIT/INTEGRATION GATE: PASSED
 - Full formulas, state machines, validation definitions and limitations are in
   `docs/SEAT_STABLE_IDENTITY_REPORT.md`.
 
-Stop after Seat-Stable Identity. Do not automatically begin Proposal Builder, ROI,
-TSM/action recognition, Events, Evidence, Appeals, or Reports.
+## Phase 6 — Action Recognition Runtime
+
+```text
+PHASE 6 FUNCTIONAL IMPLEMENTATION: PASSED
+PRE-STABILIZATION PERFORMANCE: FAILED (5.43 FPS < 10 FPS)
+RESOLUTION: SEE PHASE 6.5 BELOW
+```
+
+- Added stable SessionCandidate-based Single and Seat-adjacent Pair proposals,
+  verified R3 ROI geometry, bounded timestamped 4-second RGB ROI buffers,
+  a shared SHA-validated TSM-ResNet50 R3 adapter, capacity-one action queues,
+  generation-safe seek/reset and low-frequency raw ActionPrediction WebSocket
+  messages. The normal operator UI remains unchanged; raw action diagnostics
+  appear only in the developer drawer. No database migration or per-frame DB
+  writes were added.
+- Frozen evaluation vs production on one 100-frame R3 clip: identical sample
+  indices, preprocessing max absolute difference 0.0, probability max absolute
+  difference 0.0 and matching top-1. Dynamic runtime bbox ROIs are not claimed
+  to reproduce the training dataset's clip-static annotation ROI exactly.
+- Three real 60-second uploads were run through production YOLO11n → ByteTrack
+  → Seat Identity → proposal/ROI/buffer → R3 checkpoint on CPU: 903 frames per
+  mode, 18 unique Single IDs, 15 unique Pair IDs and 331 raw predictions. No
+  inference error; one model load; 82 stale action requests were dropped.
+- Full backend suite: 106 collected, 105 passed, 1 optional CUDA test skipped.
+  Ruff passes; mypy passes for 101 app source files. Frontend Vitest passes
+  10 files/28 tests and production typecheck/build passes.
+- The CPU offline throughput comparison fell from 31.17 FPS tracking-only to
+  8.33 FPS tracking+action. A later three-clip GTX1650 Max-Q CUDA/FP16 rerun
+  measured 38.97 FPS tracking-only and 5.43 FPS tracking+action, with 837 raw
+  predictions, no CUDA/action error, and observed peaks of 100% GPU, 531 MiB
+  VRAM and 71°C. That baseline failed the configured 10-FPS minimum; Phase 6.5
+  below resolves the runtime bottleneck. Existing Seat Identity field
+  acceptance gaps remain independent of Action Runtime performance.
+- Contract, numeric equivalence, per-clip latency/performance and all 50 Phase
+  6 report items are in `docs/TSM_RUNTIME_CONTRACT.md` and
+  `docs/PHASE6_ACTION_RECOGNITION_REPORT.md`.
+
+## Phase 6.5 — Action Runtime Performance Stabilization
+
+```text
+PHASE 6: FUNCTIONAL PASS
+PHASE 6.5: PERFORMANCE PASS
+ACTION RECOGNITION: PASS (raw prediction runtime)
+```
+
+- Added an explicit oldest-prediction-first Action Scheduler between ready
+  timestamp buffers and TSM. It maintains one latest ready clip per stable
+  SessionCandidate proposal, per-proposal source-timestamp stride, capacity-one
+  dispatch, B2 compute budget, 2000-ms max age and separate replaced/expired
+  metrics. Pause remains timestamp-driven; seek resets buffers, scheduler and
+  stale output generation; stop joins action threads.
+- Isolated real-checkpoint profiling found the GTX1650's TSM FP16 path is about
+  three times slower than FP32 and produces non-finite output at B2/B8. The GTX
+  profile now uses validated FP32, stride 1500 ms, max batch 2, queue 1 and
+  minimum inference interval 200 ms. A finite-output guard prevents invalid
+  probabilities from being published.
+- Same-video ablations executed stride 500/1000/1500/2000 at B2 and B1/B2/B4
+  at stride 1500. Selected B2 preserves approximately 1.5–1.7-second Single
+  and Pair cadence without B4's longer kernel/VRAM cost or B1's 2.7-second P95
+  coverage loss.
+- Three 60-second representative clips passed offline at minimum 14.39 FPS.
+  An additional 180 seconds of realtime-paced validation sustained 12.51 FPS
+  on all clips with lag P95 100–104 ms, non-increasing lag, ActionPrediction
+  age P95 160–320 ms, all Single/Pair IDs covered, zero action errors/OOM and
+  final queue depth zero.
+- The scientific contract is unchanged. A real 100-frame R3 clip still has
+  preprocessing max difference 0.0 and FP32 probability max difference 0.0.
+  No Head Pose, object branch, Event FSM, Event or Evidence functionality was
+  added.
+- `action_recognition.enabled` remains false by default so deployment activation
+  is explicit and is not confused with an action-accuracy claim. RTX3060 is
+  structured separately but remains unbenchmarked.
+- Full results and raw artifact locations:
+  `docs/PHASE6_5_ACTION_PERFORMANCE_REPORT.md`.
+
+Stop after Phase 6.5. Do not automatically begin Phase 7/Event generation.

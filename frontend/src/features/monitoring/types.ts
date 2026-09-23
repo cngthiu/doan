@@ -74,7 +74,74 @@ export interface RuntimeDiagnostics {
   empty_seats: number
   seat_switches: number
   identity_recoveries: number
+  active_single_proposals: number
+  active_pair_proposals: number
+  ready_action_buffers: number
+  active_action_buffers: number
+  buffered_roi_frames: number
+  action_predictions_total: number
+  action_predictions_per_second: number
+  tsm_preprocess_ms_mean: number | null
+  tsm_preprocess_ms_p95: number | null
+  tsm_inference_ms_mean: number | null
+  tsm_inference_ms_p95: number | null
+  action_pipeline_ms_mean: number | null
+  action_pipeline_ms_p95: number | null
+  action_batch_size_mean: number | null
+  action_batch_size_p95: number | null
+  action_queue_depth: number
+  stale_action_requests_dropped: number
+  action_device: string | null
+  scheduler_ready_proposals: number
+  scheduler_in_flight_proposals: number
+  expired_ready_requests: number
+  replaced_ready_requests: number
+  action_batches_total: number
+  single_predictions_per_second: number
+  pair_predictions_per_second: number
+  single_prediction_interval_ms_mean: number | null
+  single_prediction_interval_ms_p95: number | null
+  single_prediction_interval_ms_max: number | null
+  pair_prediction_interval_ms_mean: number | null
+  pair_prediction_interval_ms_p95: number | null
+  pair_prediction_interval_ms_max: number | null
+  action_prediction_age_ms_mean: number | null
+  action_prediction_age_ms_p95: number | null
+  tsm_forward_ms_mean: number | null
+  tsm_forward_ms_p95: number | null
   profile: string
+}
+
+export type ActionClass = 'normal' | 'suspicious_looking' | 'communicating' | 'exchange_object' | 'using_phone/cheat_sheet'
+
+export interface ActionPrediction {
+  proposal_id: string
+  proposal_type: 'SINGLE' | 'PAIR'
+  session_candidate_ids: string[]
+  seat_codes: string[]
+  timestamp_ms: number
+  class_probabilities: Record<ActionClass, number>
+  predicted_class: ActionClass
+  confidence: number
+  model_name: string
+}
+
+export interface ActionPredictionMessage {
+  type: 'action_prediction'
+  session_id: string
+  runtime_instance_id: string
+  runtime_generation: number
+  timestamp_ms: number
+  predictions: ActionPrediction[]
+}
+
+export interface ActionErrorMessage {
+  type: 'action_error'
+  session_id: string
+  runtime_instance_id: string
+  runtime_generation: number
+  timestamp_ms: number
+  error: string
 }
 
 export interface RuntimeStateMessage {
@@ -90,7 +157,7 @@ export interface RuntimeStateMessage {
   tracking_seq: number
 }
 
-export type MonitoringMessage = TrackingFrame | RuntimeDiagnostics | RuntimeStateMessage
+export type MonitoringMessage = TrackingFrame | RuntimeDiagnostics | RuntimeStateMessage | ActionPredictionMessage | ActionErrorMessage
 
 export interface MonitoringStatus {
   session_id: string

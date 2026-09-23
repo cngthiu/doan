@@ -9,6 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from app.ai.action_recognition.adapter import ActionModelAdapter
+from app.ai.action_recognition.runtime import ActionRecognitionRuntime
 from app.ai.detector.yolo import PersonDetector
 from app.ai.domain import (
     Detection,
@@ -49,6 +51,8 @@ class VideoAnalysisWorker:
         runtime_instance_id: uuid.UUID | None = None,
         seat_identity_context: SeatIdentityContext | None = None,
         seat_assignment_factory: Callable[..., SeatAssignmentEngine] = SeatAssignmentEngine,
+        action_model: ActionModelAdapter | None = None,
+        action_runtime_factory: Callable[..., ActionRecognitionRuntime] = ActionRecognitionRuntime,
     ) -> None:
         self.session_id = session_id
         self.runtime_instance_id = runtime_instance_id or uuid.uuid4()
@@ -65,6 +69,8 @@ class VideoAnalysisWorker:
         self._tracker_factory = tracker_factory
         self._decoder_factory = decoder_factory
         self._seat_assignment_factory = seat_assignment_factory
+        self._action_model = action_model
+        self._action_runtime_factory = action_runtime_factory
         self._buffer: LatestValueBuffer[FramePacket] = LatestValueBuffer()
         self._stop = threading.Event()
         self._paused = threading.Event()
@@ -215,6 +221,7 @@ class VideoAnalysisWorker:
         last_diagnostics = 0.0
         last_generation: int | None = None
         last_tracking_timestamp_ms: int | None = None
+        action_runtime: ActionRecognitionRuntime | None = None
         try:
             detector = self._detector_factory(self.profile.detector)
             tracker = self._tracker_factory(self.profile.tracker)
@@ -222,6 +229,17 @@ class VideoAnalysisWorker:
                 self.seat_identity_context,
                 self.profile.seat_assignment,
             )
+            if self.profile.action_recognition.enabled:
+                if self._action_model is None:
+                    raise RuntimeError("Action recognition is enabled without a shared R3 model")
+                action_runtime = self._action_runtime_factory(
+                    session_id=self.session_id,
+                    runtime_instance_id=self.runtime_instance_id,
+                    config=self.profile.action_recognition,
+                    identity_context=self.seat_identity_context,
+                    model=self._action_model,
+                    publish=self._publish,
+                )
             tracker_instance_id = getattr(tracker, "instance_id", uuid.uuid4())
             if self._stop.is_set():
                 return
@@ -241,6 +259,8 @@ class VideoAnalysisWorker:
                 elif packet.generation != last_generation:
                     tracker.reset()
                     seat_assignment.reset()
+                    if action_runtime is not None:
+                        action_runtime.reset(packet.generation)
                     last_generation = packet.generation
                     last_tracking_timestamp_ms = None
                 if (
@@ -326,6 +346,13 @@ class VideoAnalysisWorker:
                     seats=seat_snapshot.seats,
                 )
                 self._publish(frame.as_message())
+                if action_runtime is not None:
+                    action_runtime.update(
+                        packet.frame,
+                        tracks,
+                        packet.timestamp_ms,
+                        packet.generation,
+                    )
                 self._log_tracking_debug(
                     packet=packet,
                     detections=detections,
@@ -344,6 +371,7 @@ class VideoAnalysisWorker:
                     system = read_system_metrics()
                     window = max(completed_at - completions[0], 1.0) if completions else 1.0
                     actual_fps = len(completions) / window
+                    action_diagnostics = action_runtime.diagnostics() if action_runtime else None
                     diagnostics = RuntimeDiagnostics(
                         session_id=self.session_id,
                         runtime_instance_id=self.runtime_instance_id,
@@ -380,11 +408,165 @@ class VideoAnalysisWorker:
                         seat_switches=seat_snapshot.seat_switches,
                         identity_recoveries=seat_snapshot.identity_recoveries,
                         profile=self.profile.profile,
+                        active_single_proposals=(
+                            action_diagnostics.active_single_proposals if action_diagnostics else 0
+                        ),
+                        active_pair_proposals=(
+                            action_diagnostics.active_pair_proposals if action_diagnostics else 0
+                        ),
+                        ready_action_buffers=(
+                            action_diagnostics.ready_action_buffers if action_diagnostics else 0
+                        ),
+                        active_action_buffers=(
+                            action_diagnostics.active_action_buffers if action_diagnostics else 0
+                        ),
+                        buffered_roi_frames=(
+                            action_diagnostics.buffered_roi_frames if action_diagnostics else 0
+                        ),
+                        action_predictions_total=(
+                            action_diagnostics.action_predictions_total if action_diagnostics else 0
+                        ),
+                        action_predictions_per_second=(
+                            action_diagnostics.action_predictions_per_second
+                            if action_diagnostics
+                            else 0.0
+                        ),
+                        tsm_preprocess_ms_mean=(
+                            action_diagnostics.tsm_preprocess_ms_mean
+                            if action_diagnostics
+                            else None
+                        ),
+                        tsm_preprocess_ms_p95=(
+                            action_diagnostics.tsm_preprocess_ms_p95 if action_diagnostics else None
+                        ),
+                        tsm_inference_ms_mean=(
+                            action_diagnostics.tsm_inference_ms_mean if action_diagnostics else None
+                        ),
+                        tsm_inference_ms_p95=(
+                            action_diagnostics.tsm_inference_ms_p95 if action_diagnostics else None
+                        ),
+                        action_pipeline_ms_mean=(
+                            action_diagnostics.action_pipeline_ms_mean
+                            if action_diagnostics
+                            else None
+                        ),
+                        action_pipeline_ms_p95=(
+                            action_diagnostics.action_pipeline_ms_p95
+                            if action_diagnostics
+                            else None
+                        ),
+                        action_batch_size_mean=(
+                            action_diagnostics.action_batch_size_mean
+                            if action_diagnostics
+                            else None
+                        ),
+                        action_batch_size_p95=(
+                            action_diagnostics.action_batch_size_p95 if action_diagnostics else None
+                        ),
+                        action_queue_depth=(
+                            action_diagnostics.action_queue_depth if action_diagnostics else 0
+                        ),
+                        stale_action_requests_dropped=(
+                            action_diagnostics.stale_action_requests_dropped
+                            if action_diagnostics
+                            else 0
+                        ),
+                        action_device=(
+                            action_diagnostics.action_device if action_diagnostics else None
+                        ),
+                        scheduler_ready_proposals=(
+                            action_diagnostics.scheduler_ready_proposals
+                            if action_diagnostics
+                            else 0
+                        ),
+                        scheduler_in_flight_proposals=(
+                            action_diagnostics.scheduler_in_flight_proposals
+                            if action_diagnostics
+                            else 0
+                        ),
+                        expired_ready_requests=(
+                            action_diagnostics.expired_ready_requests
+                            if action_diagnostics
+                            else 0
+                        ),
+                        replaced_ready_requests=(
+                            action_diagnostics.replaced_ready_requests
+                            if action_diagnostics
+                            else 0
+                        ),
+                        action_batches_total=(
+                            action_diagnostics.action_batches_total
+                            if action_diagnostics
+                            else 0
+                        ),
+                        single_predictions_per_second=(
+                            action_diagnostics.single_predictions_per_second
+                            if action_diagnostics
+                            else 0.0
+                        ),
+                        pair_predictions_per_second=(
+                            action_diagnostics.pair_predictions_per_second
+                            if action_diagnostics
+                            else 0.0
+                        ),
+                        single_prediction_interval_ms_mean=(
+                            action_diagnostics.single_prediction_interval_ms_mean
+                            if action_diagnostics
+                            else None
+                        ),
+                        single_prediction_interval_ms_p95=(
+                            action_diagnostics.single_prediction_interval_ms_p95
+                            if action_diagnostics
+                            else None
+                        ),
+                        single_prediction_interval_ms_max=(
+                            action_diagnostics.single_prediction_interval_ms_max
+                            if action_diagnostics
+                            else None
+                        ),
+                        pair_prediction_interval_ms_mean=(
+                            action_diagnostics.pair_prediction_interval_ms_mean
+                            if action_diagnostics
+                            else None
+                        ),
+                        pair_prediction_interval_ms_p95=(
+                            action_diagnostics.pair_prediction_interval_ms_p95
+                            if action_diagnostics
+                            else None
+                        ),
+                        pair_prediction_interval_ms_max=(
+                            action_diagnostics.pair_prediction_interval_ms_max
+                            if action_diagnostics
+                            else None
+                        ),
+                        action_prediction_age_ms_mean=(
+                            action_diagnostics.action_prediction_age_ms_mean
+                            if action_diagnostics
+                            else None
+                        ),
+                        action_prediction_age_ms_p95=(
+                            action_diagnostics.action_prediction_age_ms_p95
+                            if action_diagnostics
+                            else None
+                        ),
+                        tsm_forward_ms_mean=(
+                            action_diagnostics.timing_profiles["forward_ms"]["mean"]
+                            if action_diagnostics
+                            else None
+                        ),
+                        tsm_forward_ms_p95=(
+                            action_diagnostics.timing_profiles["forward_ms"]["p95"]
+                            if action_diagnostics
+                            else None
+                        ),
                     )
                     self._publish(diagnostics.as_message())
                     last_diagnostics = completed_at
         except Exception as error:
             self._finish(error=f"AI pipeline failure: {error}")
+        finally:
+            if action_runtime is not None and not action_runtime.close():
+                logger.error("Action runtime did not stop cleanly for session=%s", self.session_id)
 
     def _log_tracking_debug(
         self,

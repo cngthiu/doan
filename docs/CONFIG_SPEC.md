@@ -147,3 +147,40 @@ reduce ID counts.
 Seat-assignment weights must be non-negative with a positive sum. `min_score` is in `[0,1]`;
 expansion, confirmation/release durations, switch margin and switch duration are non-negative.
 Weights are applied exactly as configured and are not silently normalized.
+
+## Phase 6 Action Recognition
+
+The deployed runtime YAML files add `action_recognition` with the verified R3
+checkpoint at `/models/action/r3/model.pth`, SHA-256 validation, TSM-ResNet50,
+8 segments, 224×224, and a 4,000 ms timestamp window. Phase 6.5 measured that
+TSM FP16 is about three times slower than FP32 on the GTX1650 TU117 and produces
+non-finite B2/B8 output. The validated GTX profile therefore uses FP32 with:
+
+```yaml
+action_recognition:
+  enabled: false
+  precision: fp32
+  scheduling:
+    prediction_stride_ms: 1500
+    max_batch_size: 2
+    max_queue_size: 1
+    max_prediction_age_ms: 2000
+    min_inference_interval_ms: 200
+```
+
+The action branch remains disabled by default so runtime activation is an
+explicit deployment choice; its enabled performance path passed on GTX1650.
+The RTX3060 block remains a future, unvalidated profile and must not be treated
+as benchmark evidence. Scheduler validation requires positive stride/batch/age,
+batch `<=8`, queue size exactly one and non-negative minimum interval. Ready
+requests use per-proposal timestamp stride, latest-equivalent replacement,
+oldest-prediction-first selection and age expiry. These values do not change
+the four-second clip span.
+
+Single ROI: `expand_x=.04`, `expand_top=.03`, `expand_bottom=.08`, minimum
+128×128 source pixels. Pair ROI: `.025`, `.02`, `.06`, minimum 128×128.
+Adjacency uses row center-Y tolerance `.75`×Seat height and maximum horizontal
+gap `2.5`×Seat width. The config validator fixes the R3 segment count, input
+size and clip duration to the audited checkpoint contract. See
+`docs/TSM_RUNTIME_CONTRACT.md` for formulas/sampling limits and
+`docs/PHASE6_5_ACTION_PERFORMANCE_REPORT.md` for the full ablation.

@@ -20,7 +20,9 @@ class LatestWebSocketPublisher:
         self._subscribers: dict[uuid.UUID, Subscriber] = {}
 
     def subscribe(self) -> Subscriber:
-        subscriber = Subscriber(uuid.uuid4(), asyncio.get_running_loop(), asyncio.Queue(maxsize=1))
+        # Coalesce by message type so low-frequency action results are not
+        # overwritten by the next high-frequency tracking frame.
+        subscriber = Subscriber(uuid.uuid4(), asyncio.get_running_loop(), asyncio.Queue(maxsize=4))
         with self._lock:
             self._subscribers[subscriber.id] = subscriber
         return subscriber
@@ -48,12 +50,20 @@ class LatestWebSocketPublisher:
         queue: asyncio.Queue[dict[str, Any]],
         message: dict[str, Any],
     ) -> None:
-        if queue.full():
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        queue.put_nowait(message)
+        pending: list[dict[str, Any]] = []
+        while not queue.empty():
+            pending.append(queue.get_nowait())
+        message_type = message.get("type")
+        pending = [item for item in pending if item.get("type") != message_type]
+        pending.append(message)
+        while len(pending) > queue.maxsize:
+            tracking_index = next(
+                (index for index, item in enumerate(pending) if item.get("type") == "tracking"),
+                0,
+            )
+            pending.pop(tracking_index)
+        for item in pending:
+            queue.put_nowait(item)
 
     @property
     def subscriber_count(self) -> int:

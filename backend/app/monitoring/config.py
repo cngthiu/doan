@@ -77,6 +77,61 @@ class SeatAssignmentConfig(BaseModel):
         return self
 
 
+class ActionRoiGeometryConfig(BaseModel):
+    expand_x: float = Field(ge=0)
+    expand_top: float = Field(ge=0)
+    expand_bottom: float = Field(ge=0)
+    min_crop_width_px: int = Field(gt=0)
+    min_crop_height_px: int = Field(gt=0)
+
+
+class ActionAdjacencyConfig(BaseModel):
+    row_tolerance_ratio: float = Field(default=0.75, ge=0)
+    max_horizontal_gap_ratio: float = Field(default=2.5, ge=0)
+
+
+class ActionSchedulingConfig(BaseModel):
+    prediction_stride_ms: int = Field(default=1500, gt=0)
+    max_batch_size: int = Field(default=2, gt=0, le=8)
+    max_queue_size: Literal[1] = 1
+    max_prediction_age_ms: int = Field(default=2000, gt=0)
+    min_inference_interval_ms: int = Field(default=200, ge=0)
+
+
+class ActionRecognitionConfig(BaseModel):
+    enabled: bool = False
+    model: Path = Path("action/r3/model.pth")
+    checkpoint_sha256: str = "c5ef406cfe404d2883575d8dcf1306fd7bebc6d6b1ec723b5093f2a3e09b357c"
+    architecture: Literal["TSM-ResNet50"] = "TSM-ResNet50"
+    num_segments: Literal[8] = 8
+    input_size: Literal[224] = 224
+    clip_span_ms: Literal[4000] = 4000
+    capture_interval_ms: int = Field(default=200, gt=0)
+    sample_tolerance_ms: int = Field(default=180, ge=0)
+    max_gap_ms: int = Field(default=750, gt=0)
+    precision: Literal["fp16", "fp32"] = "fp32"
+    scheduling: ActionSchedulingConfig = Field(default_factory=ActionSchedulingConfig)
+    single_roi: ActionRoiGeometryConfig = Field(
+        default_factory=lambda: ActionRoiGeometryConfig(
+            expand_x=0.04,
+            expand_top=0.03,
+            expand_bottom=0.08,
+            min_crop_width_px=128,
+            min_crop_height_px=128,
+        )
+    )
+    pair_roi: ActionRoiGeometryConfig = Field(
+        default_factory=lambda: ActionRoiGeometryConfig(
+            expand_x=0.025,
+            expand_top=0.02,
+            expand_bottom=0.06,
+            min_crop_width_px=128,
+            min_crop_height_px=128,
+        )
+    )
+    adjacency: ActionAdjacencyConfig = Field(default_factory=ActionAdjacencyConfig)
+
+
 class TrackingDebugConfig(BaseModel):
     enabled: bool = False
     log_every_n_frames: int = Field(default=10, gt=0)
@@ -97,6 +152,7 @@ class RuntimeProfile(BaseModel):
     tracker: ByteTrackConfig
     diagnostics: DiagnosticsConfig
     seat_assignment: SeatAssignmentConfig = Field(default_factory=SeatAssignmentConfig)
+    action_recognition: ActionRecognitionConfig = Field(default_factory=ActionRecognitionConfig)
     tracking_debug: TrackingDebugConfig = Field(default_factory=TrackingDebugConfig)
     ui: TrackingUiConfig = Field(default_factory=TrackingUiConfig)
 
@@ -145,6 +201,17 @@ def load_runtime_profile_from_paths(
         model = model_root.joinpath(*model.parts[2:])
     detector_payload = {**detector, "model": model, "device": runtime.get("device")}
 
+    raw_action_payload = payload.get("action_recognition") or {}
+    if not isinstance(raw_action_payload, dict):
+        raise ValueError("Action recognition configuration must be a mapping")
+    action_payload = dict(raw_action_payload)
+    action_model = Path(str(action_payload.get("model", "action/r3/model.pth")))
+    if action_model.is_absolute() and action_model.parts[:2] == ("/", "models"):
+        action_model = model_root.joinpath(*action_model.parts[2:])
+    elif not action_model.is_absolute():
+        action_model = model_root / action_model
+    action_payload["model"] = action_model
+
     tracker_path = Path(str(tracker.get("config", "")))
     if tracker_path.is_absolute() and tracker_path.parts[:3] == ("/", "app", "configs"):
         tracker_path = config_root.joinpath(*tracker_path.parts[3:])
@@ -160,6 +227,7 @@ def load_runtime_profile_from_paths(
         tracker=ByteTrackConfig.model_validate(_yaml_mapping(tracker_path)),
         diagnostics=DiagnosticsConfig.model_validate(payload.get("diagnostics")),
         seat_assignment=SeatAssignmentConfig.model_validate(payload.get("seat_assignment") or {}),
+        action_recognition=ActionRecognitionConfig.model_validate(action_payload),
         tracking_debug=TrackingDebugConfig.model_validate(payload.get("tracking_debug") or {}),
         ui=TrackingUiConfig.model_validate(payload.get("ui") or {}),
     )

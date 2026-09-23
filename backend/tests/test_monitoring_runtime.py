@@ -217,6 +217,22 @@ def test_websocket_publisher_keeps_only_latest_message_for_slow_client() -> None
     asyncio.run(scenario())
 
 
+def test_websocket_publisher_preserves_low_frequency_action_message() -> None:
+    async def scenario() -> None:
+        publisher = LatestWebSocketPublisher()
+        subscriber = publisher.subscribe()
+        publisher.publish({"type": "tracking", "sequence": 1})
+        publisher.publish({"type": "action_prediction", "sequence": 2})
+        publisher.publish({"type": "tracking", "sequence": 3})
+        await asyncio.sleep(0)
+        first = await subscriber.queue.get()
+        second = await subscriber.queue.get()
+        assert {first["type"], second["type"]} == {"tracking", "action_prediction"}
+        assert next(item for item in (first, second) if item["type"] == "tracking")["sequence"] == 3
+
+    asyncio.run(scenario())
+
+
 def test_websocket_publisher_removes_subscriber_with_closed_loop() -> None:
     publisher = LatestWebSocketPublisher()
     loop = asyncio.new_event_loop()

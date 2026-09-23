@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from app.ai.action_recognition.adapter import ActionModelRegistry
 from app.ai.detector.yolo import PersonDetector
 from app.ai.seat_identity.types import SeatIdentityContext
 from app.monitoring.config import RuntimeProfile
@@ -51,6 +52,7 @@ class MonitoringRuntimeManager:
         self._handles: dict[uuid.UUID, RuntimeHandle] = {}
         self._worker_factory = worker_factory
         self._terminal_callback = terminal_callback
+        self._action_models = ActionModelRegistry()
 
     def start(
         self,
@@ -71,7 +73,7 @@ class MonitoringRuntimeManager:
                 raise RuntimeError("Monitoring runtime đã hoạt động")
             publisher = LatestWebSocketPublisher()
             runtime_instance_id = uuid.uuid4()
-            worker = self._worker_factory(
+            worker_arguments: dict[str, Any] = dict(
                 session_id=session_id,
                 video_path=video_path,
                 profile=profile,
@@ -87,6 +89,14 @@ class MonitoringRuntimeManager:
                 runtime_instance_id=runtime_instance_id,
                 seat_identity_context=seat_identity_context,
             )
+            if profile.action_recognition.enabled:
+                action_model = self._action_models.get(
+                    profile.action_recognition,
+                    profile.device,
+                )
+                action_model.ensure_loaded()
+                worker_arguments["action_model"] = action_model
+            worker = self._worker_factory(**worker_arguments)
             handle = RuntimeHandle(
                 worker=worker,
                 profile=profile,

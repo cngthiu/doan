@@ -126,6 +126,41 @@ class RuntimeDiagnostics:
     seat_switches: int
     identity_recoveries: int
     profile: str
+    active_single_proposals: int = 0
+    active_pair_proposals: int = 0
+    ready_action_buffers: int = 0
+    active_action_buffers: int = 0
+    buffered_roi_frames: int = 0
+    action_predictions_total: int = 0
+    action_predictions_per_second: float = 0.0
+    tsm_preprocess_ms_mean: float | None = None
+    tsm_preprocess_ms_p95: float | None = None
+    tsm_inference_ms_mean: float | None = None
+    tsm_inference_ms_p95: float | None = None
+    action_pipeline_ms_mean: float | None = None
+    action_pipeline_ms_p95: float | None = None
+    action_batch_size_mean: float | None = None
+    action_batch_size_p95: float | None = None
+    action_queue_depth: int = 0
+    stale_action_requests_dropped: int = 0
+    action_device: str | None = None
+    scheduler_ready_proposals: int = 0
+    scheduler_in_flight_proposals: int = 0
+    expired_ready_requests: int = 0
+    replaced_ready_requests: int = 0
+    action_batches_total: int = 0
+    single_predictions_per_second: float = 0.0
+    pair_predictions_per_second: float = 0.0
+    single_prediction_interval_ms_mean: float | None = None
+    single_prediction_interval_ms_p95: float | None = None
+    single_prediction_interval_ms_max: float | None = None
+    pair_prediction_interval_ms_mean: float | None = None
+    pair_prediction_interval_ms_p95: float | None = None
+    pair_prediction_interval_ms_max: float | None = None
+    action_prediction_age_ms_mean: float | None = None
+    action_prediction_age_ms_p95: float | None = None
+    tsm_forward_ms_mean: float | None = None
+    tsm_forward_ms_p95: float | None = None
 
     def as_message(self) -> dict[str, Any]:
         message = asdict(self)

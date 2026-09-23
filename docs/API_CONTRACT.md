@@ -131,6 +131,41 @@ only in development logs and benchmark CSV output.
 Diagnostics additionally include seat assignment latency, assigned/tentative/unassigned track
 counts, occupied/grace/empty seat counts, seat switches, and identity recoveries.
 
+Phase 6 publishes a separate low-frequency raw-action message (no Event write):
+```json
+{
+  "type": "action_prediction",
+  "session_id": "uuid",
+  "runtime_instance_id": "uuid",
+  "runtime_generation": 1,
+  "timestamp_ms": 53240,
+  "predictions": [{
+    "proposal_id": "single:session-candidate-uuid",
+    "proposal_type": "SINGLE",
+    "session_candidate_ids": ["uuid"],
+    "seat_codes": ["B03"],
+    "timestamp_ms": 53240,
+    "class_probabilities": {
+      "normal": 0.10,
+      "suspicious_looking": 0.72,
+      "communicating": 0.04,
+      "exchange_object": 0.02,
+      "using_phone/cheat_sheet": 0.12
+    },
+    "predicted_class": "suspicious_looking",
+    "confidence": 0.72,
+    "model_name": "r3_tsm_r50_k400_diff_final"
+  }]
+}
+```
+The same message supports `PAIR` with two canonical SessionCandidate IDs and
+Seat codes. `action_error` reports an inference failure without altering the
+tracking lifecycle. Diagnostics carry proposal counts, action buffer/queue
+depth, stale/expired and latest-replacement counts, scheduler ready/in-flight
+counts, Single/Pair prediction rates and interval mean/P95/max, prediction age,
+device, batch count, and mean/P95 preprocess/inference/forward/pipeline latency.
+WebSocket authorization remains `tracking.read`.
+
 ## Manual events
 ```text
 POST /api/v1/events/manual
