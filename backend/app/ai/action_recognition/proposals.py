@@ -111,3 +111,67 @@ def build_action_proposals(
             )
         )
     return tuple(proposals)
+
+
+def build_logical_action_proposals(
+    tracks: tuple[Track, ...],
+    neighbor_pairs: tuple[tuple[str, str], ...],
+    timestamp_ms: int,
+) -> tuple[ActionProposal, ...]:
+    """Build stable Actor-ID proposals without requiring Seat geometry."""
+    active = {track.actor_id: track for track in tracks if track.actor_id}
+    proposals: list[ActionProposal] = []
+    for actor_id, track in sorted(active.items()):
+        candidate_ids = (
+            (track.identity.session_candidate_id,)
+            if track.identity.session_candidate_id is not None
+            else ()
+        )
+        seat_ids = (track.identity.seat_id,) if track.identity.seat_id is not None else ()
+        seat_codes = (track.identity.seat_code,) if track.identity.seat_code else ()
+        proposals.append(
+            ActionProposal(
+                proposal_id=f"single:{actor_id}",
+                proposal_type=ProposalType.SINGLE,
+                actor_ids=(actor_id,),
+                session_candidate_ids=candidate_ids,
+                seat_ids=seat_ids,
+                seat_codes=seat_codes,
+                current_track_ids=(track.track_id,),
+                bbox_norm=track.bbox_norm,
+                timestamp_ms=timestamp_ms,
+            )
+        )
+    for left_actor, right_actor in sorted(neighbor_pairs):
+        left, right = active.get(left_actor), active.get(right_actor)
+        if left is None or right is None:
+            continue
+        actor_ids = tuple(sorted((left_actor, right_actor)))
+        candidate_values = (left.identity.session_candidate_id, right.identity.session_candidate_id)
+        pair_candidate_ids: tuple[uuid.UUID, ...] = ()
+        if all(value is not None for value in candidate_values):
+            pair_candidate_ids = tuple(
+                sorted((value for value in candidate_values if value is not None), key=str)
+            )
+        seat_values = (left.identity.seat_id, right.identity.seat_id)
+        pair_seat_ids: tuple[uuid.UUID, ...] = ()
+        if all(value is not None for value in seat_values):
+            pair_seat_ids = tuple(value for value in seat_values if value is not None)
+        seat_code_values = (left.identity.seat_code, right.identity.seat_code)
+        pair_seat_codes: tuple[str, ...] = ()
+        if all(value is not None for value in seat_code_values):
+            pair_seat_codes = tuple(value for value in seat_code_values if value is not None)
+        proposals.append(
+            ActionProposal(
+                proposal_id=f"pair:{actor_ids[0]}:{actor_ids[1]}",
+                proposal_type=ProposalType.PAIR,
+                actor_ids=actor_ids,
+                session_candidate_ids=pair_candidate_ids,
+                seat_ids=pair_seat_ids,
+                seat_codes=pair_seat_codes,
+                current_track_ids=(left.track_id, right.track_id),
+                bbox_norm=union_bbox((left.bbox_norm, right.bbox_norm)),
+                timestamp_ms=timestamp_ms,
+            )
+        )
+    return tuple(proposals)

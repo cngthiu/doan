@@ -4,6 +4,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from app.ai.logical_tracking.types import ActorState
 from app.ai.seat_identity.types import SeatRuntimeSnapshot, TrackIdentity
 
 
@@ -27,6 +28,9 @@ class Track:
     bbox_norm: tuple[float, float, float, float]
     confidence: float
     identity: TrackIdentity
+    actor_id: str = ""
+    actor_state: ActorState = ActorState.ACTIVE
+    recovered: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +61,9 @@ class TrackingFrame:
             "source_height": self.source_height,
             "tracks": [
                 {
+                    "actor_id": track.actor_id,
+                    "actor_state": track.actor_state.value,
+                    "recovered": track.recovered,
                     "track_id": track.track_id,
                     "bbox_norm": track.bbox_norm,
                     "confidence": track.confidence,
@@ -126,6 +133,20 @@ class RuntimeDiagnostics:
     seat_switches: int
     identity_recoveries: int
     profile: str
+    active_logical_actors: int = 0
+    lost_logical_actors: int = 0
+    raw_track_count: int = 0
+    recoveries_total: int = 0
+    motion_recoveries: int = 0
+    reid_recoveries: int = 0
+    ambiguous_recoveries: int = 0
+    reid_requests_total: int = 0
+    reid_batches_total: int = 0
+    reid_dropped_stale: int = 0
+    logical_tracking_ms: float | None = None
+    reid_latency_ms_mean: float | None = None
+    reid_latency_ms_p95: float | None = None
+    dynamic_pairs: int = 0
     active_single_proposals: int = 0
     active_pair_proposals: int = 0
     ready_action_buffers: int = 0

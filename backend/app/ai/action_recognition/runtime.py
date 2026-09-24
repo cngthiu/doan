@@ -18,7 +18,11 @@ from app.ai.action_recognition.adapter import (
     ActionModelResult,
 )
 from app.ai.action_recognition.buffer import TimestampedRoiBuffer
-from app.ai.action_recognition.proposals import adjacent_seat_pairs, build_action_proposals
+from app.ai.action_recognition.proposals import (
+    adjacent_seat_pairs,
+    build_action_proposals,
+    build_logical_action_proposals,
+)
 from app.ai.action_recognition.roi import (
     RoiPreparationProfile,
     extract_training_roi_profiled,
@@ -26,8 +30,13 @@ from app.ai.action_recognition.roi import (
 from app.ai.action_recognition.scheduler import ActionScheduler
 from app.ai.action_recognition.types import ActionClip, ActionPrediction, ProposalType
 from app.ai.domain import Track
+from app.ai.logical_tracking.neighbors import dynamic_neighbor_pairs
 from app.ai.seat_identity.types import SeatIdentityContext
-from app.monitoring.config import ActionRecognitionConfig, ActionRoiGeometryConfig
+from app.monitoring.config import (
+    ActionRecognitionConfig,
+    ActionRoiGeometryConfig,
+    DynamicNeighborsConfig,
+)
 
 
 class ActionPredictor(Protocol):
@@ -57,6 +66,7 @@ class ActionFrame:
 class ActionRuntimeDiagnostics:
     active_single_proposals: int
     active_pair_proposals: int
+    dynamic_pairs: int
     ready_action_buffers: int
     active_action_buffers: int
     buffered_roi_frames: int
@@ -102,6 +112,8 @@ class ActionRecognitionRuntime:
         model: ActionModelAdapter,
         publish: Callable[[dict[str, Any]], None],
         on_predictions: Callable[[tuple[ActionPrediction, ...], int], None] | None = None,
+        identity_mode: str = "seat",
+        dynamic_neighbors_config: DynamicNeighborsConfig | None = None,
     ) -> None:
         self.session_id = session_id
         self.runtime_instance_id = runtime_instance_id
@@ -109,6 +121,9 @@ class ActionRecognitionRuntime:
         self._model: ActionPredictor = model
         self._publish = publish
         self._on_predictions = on_predictions
+        self._identity_mode = identity_mode
+        self._dynamic_neighbors = dynamic_neighbors_config or DynamicNeighborsConfig()
+        self._dynamic_pair_count = 0
         self._adjacent_pairs = identity_context.adjacent_seat_pairs or adjacent_seat_pairs(
             identity_context.seats,
             row_tolerance_ratio=config.adjacency.row_tolerance_ratio,
@@ -205,7 +220,16 @@ class ActionRecognitionRuntime:
         tracks = item.tracks
         timestamp_ms = item.timestamp_ms
         runtime_generation = item.runtime_generation
-        proposals = build_action_proposals(tracks, self._adjacent_pairs, timestamp_ms)
+        if self._identity_mode == "logical_track":
+            neighbor_pairs = dynamic_neighbor_pairs(tracks, self._dynamic_neighbors)
+            proposals = build_logical_action_proposals(
+                tracks,
+                neighbor_pairs,
+                timestamp_ms,
+            )
+            self._dynamic_pair_count = len(neighbor_pairs)
+        else:
+            proposals = build_action_proposals(tracks, self._adjacent_pairs, timestamp_ms)
         with self._lock:
             if self._closed or runtime_generation != self._generation:
                 return
@@ -371,6 +395,7 @@ class ActionRecognitionRuntime:
             return ActionRuntimeDiagnostics(
                 active_single_proposals=self._active_single,
                 active_pair_proposals=self._active_pair,
+                dynamic_pairs=self._dynamic_pair_count,
                 ready_action_buffers=self._ready_buffers,
                 active_action_buffers=self._buffers.proposal_count,
                 buffered_roi_frames=self._buffers.stored_frame_count,

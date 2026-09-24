@@ -19,16 +19,18 @@ export function trackingLabel(
   debug = false,
 ): string[] {
   const labels: string[] = []
-  if (track.identity.state === 'ASSIGNED' && track.identity.seat_code) {
-    const candidateCode = track.identity.session_candidate_id
-      ? candidateCodes.get(track.identity.session_candidate_id)
-      : undefined
-    labels.push(candidateCode ? `${track.identity.seat_code} • ${candidateCode}` : track.identity.seat_code)
-  } else if (track.identity.state === 'TENTATIVE') {
-    labels.push('Đang xác định…')
-  }
+  const candidateCode = track.identity.session_candidate_id
+    ? candidateCodes.get(track.identity.session_candidate_id)
+    : undefined
+  labels.push(
+    candidateCode && track.identity.seat_code
+      ? `${track.identity.seat_code} • ${candidateCode}`
+      : track.actor_id,
+  )
   if (debug) {
-    labels.push(`T${track.track_id}${track.identity.score == null ? '' : ` • score=${track.identity.score.toFixed(2)}`}`)
+    labels.push(
+      `${track.actor_id} • T${track.track_id}${track.recovered ? ' • recovered' : ''}${track.identity.score == null ? '' : ` • seat=${track.identity.score.toFixed(2)}`}`,
+    )
   }
   return labels
 }

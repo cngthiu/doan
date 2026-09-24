@@ -75,17 +75,23 @@ def _readiness(
     room: Room,
     video_asset_id: uuid.UUID | None,
 ) -> SessionReadiness:
-    seat_count = db.scalar(
-        select(func.count(Seat.id)).where(
-            Seat.room_id == room.id,
-            Seat.is_active.is_(True),
+    seat_count = (
+        db.scalar(
+            select(func.count(Seat.id)).where(
+                Seat.room_id == room.id,
+                Seat.is_active.is_(True),
+            )
         )
-    ) or 0
-    candidate_count = db.scalar(
-        select(func.count(SessionCandidate.id)).where(
-            SessionCandidate.session_id == exam_session.id
+        or 0
+    )
+    candidate_count = (
+        db.scalar(
+            select(func.count(SessionCandidate.id)).where(
+                SessionCandidate.session_id == exam_session.id
+            )
         )
-    ) or 0
+        or 0
+    )
     return SessionReadiness(
         room_selected=True,
         room_active=room.is_active,
@@ -98,12 +104,7 @@ def _readiness(
             if exam_session.status in {ExamSessionStatus.DRAFT.value, ExamSessionStatus.READY.value}
             else exam_session.status
         ),
-        can_mark_ready=(
-            room.is_active
-            and seat_count > 0
-            and candidate_count > 0
-            and video_asset_id is not None
-        ),
+        can_mark_ready=room.is_active and video_asset_id is not None,
     )
 
 
@@ -197,9 +198,7 @@ def list_sessions(
         statement = statement.where(ExamSession.status == session_status.value)
     if room_id is not None:
         statement = statement.where(ExamSession.room_id == room_id)
-    total = db.scalar(
-        select(func.count()).select_from(statement.order_by(None).subquery())
-    ) or 0
+    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0
     sessions = list(
         db.scalars(
             statement.order_by(ExamSession.created_at.desc())
@@ -344,11 +343,14 @@ def update_session(
     else:
         room = _active_room_or_error(db, room_id)
     if room_id != exam_session.room_id:
-        assignment_count = db.scalar(
-            select(func.count(SessionCandidate.id)).where(
-                SessionCandidate.session_id == exam_session.id
+        assignment_count = (
+            db.scalar(
+                select(func.count(SessionCandidate.id)).where(
+                    SessionCandidate.session_id == exam_session.id
+                )
             )
-        ) or 0
+            or 0
+        )
         if assignment_count:
             raise ApiError(
                 status.HTTP_409_CONFLICT,
@@ -386,7 +388,7 @@ def update_session(
                     raise ApiError(
                         status.HTTP_409_CONFLICT,
                         "SESSION_NOT_READY",
-                        "Room, seat layout, candidate assignments, and video are required",
+                        "An active room and source video are required",
                         readiness.model_dump(),
                         field_name="status",
                     )

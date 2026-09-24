@@ -1,14 +1,17 @@
 # ExamGuard Current State
 
-Updated: 2026-09-23
+Updated: 2026-09-24
+
+## Seat-Free Stable Tracking
+
+The default runtime identity path is now YOLO11n → ByteTrack → LogicalTrackManager → Stable Actor ID. Seat layout and Candidate mapping are optional enrichments; a READY session with an active Room and source video can start with zero Seats. Dynamic Actor-neighbor proposals replace mandatory Seat adjacency in logical mode. The GTX1650 motion-only path sustained 12.483 realtime FPS with bounded lag and queue size one. Sparse appearance produced no identity improvement and remains disabled. The strict overall gate is NOT PASSED because dense MOT/challenging crossing ground truth is unavailable; see `docs/SEAT_FREE_TRACKING_REPORT.md`.
 
 ## Checkpoint
 
 - Greenfield baseline starts at `e6870d2`; `0805e64` preserves the reusable CUDA environment while removing inherited legacy application files.
 - PostgreSQL uses the single `20260920_0001_initial_schema` migration and the approved domain tables only.
 - Docker Compose, CUDA/PyTorch, NVIDIA runtime, FFmpeg, PostgreSQL volume, media storage, YOLO11n and ByteTrack infrastructure remain unchanged.
-- Seat-Stable Identity adds runtime Track → Seat → SessionCandidate → Candidate resolution.
-  It does not add TSM, action recognition, Proposal Builder, fabricated events, or evidence.
+- The earlier Seat-Stable Identity milestone remains as optional advanced enrichment (`Stable Actor → Seat → SessionCandidate`). It is no longer the default identity prerequisite.
 
 ## Phase 5.5 UX Audit
 

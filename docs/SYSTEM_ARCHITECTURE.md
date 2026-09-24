@@ -1,5 +1,18 @@
 # ExamGuard — Greenfield System Architecture
 
+## Seat-free default identity (2026-09-24)
+
+```text
+Video → YOLO11n → ByteTrack → Logical Track Manager
+   ├─ motion/spatial recovery
+   └─ optional sparse appearance recovery when ambiguous
+→ Stable Actor ID → Dynamic Neighbor Graph
+   ├─ Single Proposal
+   └─ Pair Proposal
+```
+
+Seat configuration is optional. Seat Assignment may enrich a Stable Actor with SessionCandidate context in advanced deployments, but detection, tracking, Actor ID, monitoring start, and proposal identity do not depend on Seat geometry. Runtime Actor IDs are in-memory identities and are never durable Candidate IDs.
+
 ## High level
 ```text
 React
@@ -15,9 +28,9 @@ FastAPI
  ├── Auth
  ├── Business Services
  └── Monitoring Runtime
-       Video Decoder → Scheduler → YOLO11n → ByteTrack → Seat-Stable Identity
+       Video Decoder → Scheduler → YOLO11n → ByteTrack → Logical Track Manager
                                                    ↓
-                                       Single/Adjacent Pair Proposals
+                                       Actor Single/Dynamic Pair Proposals
                                                    ↓
                                        Bounded timestamped R3 ROI buffers
                                                    ↓
@@ -37,7 +50,7 @@ The player must not depend on AI inference FPS.
 ## AI path
 ```text
 same MP4 → decoder → timestamp → frame sampler → YOLO11n → ByteTrack
-         → Seat-Stable Identity → TrackingFrame → WebSocket
+         → Logical Track Manager → Stable Actor ID → TrackingFrame → WebSocket
          → stable proposals → R3 ROI buffers → Action Scheduler
          → background TSM R3 → ActionPrediction
 ```
@@ -62,7 +75,7 @@ bbox, confidence, and a small runtime identity result. It never contains a full 
 ## Realtime state
 Keep tracking state in memory. Runtime components may include MonitoringRuntimeManager, VideoAnalysisWorker, LatestFrameBuffer, TrackStateStore and WebSocketPublisher.
 
-## Seat-Stable Identity
+## Optional Seat identity enrichment
 ```text
 Track → Seat → SessionCandidate → Candidate
 ```

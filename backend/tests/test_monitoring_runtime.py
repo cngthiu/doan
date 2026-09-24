@@ -375,10 +375,17 @@ def test_worker_cadence_pause_seek_latest_drop_and_cleanup() -> None:
     timestamps = [item["timestamp_ms"] for item in messages if item["type"] == "tracking"]
     assert any(timestamp >= 5000 for timestamp in timestamps)
     tracking = [item for item in messages if item["type"] == "tracking"]
+    assert tracking
+    assert all(item["seats"] == [] for item in tracking)
+    assert all(track["actor_id"].startswith("A") for item in tracking for track in item["tracks"])
+    assert all(
+        track["identity"]["seat_id"] is None for item in tracking for track in item["tracks"]
+    )
     assert len({item["runtime_instance_id"] for item in tracking}) == 1
     assert len({item["tracker_instance_id"] for item in tracking}) == 1
     post_seek = [item for item in tracking if item["runtime_generation"] == 1]
     assert post_seek and post_seek[0]["tracking_seq"] == 1
+    assert post_seek[0]["tracks"][0]["actor_id"] == "A0001"
 
 
 def test_worker_discards_inflight_result_from_before_seek() -> None:

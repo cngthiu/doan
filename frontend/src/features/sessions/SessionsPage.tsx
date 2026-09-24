@@ -18,6 +18,13 @@ import { permissions, usePermissions } from '../auth/permissions'
 import { getRooms } from '../rooms/api'
 import type { Room } from '../rooms/types'
 import { createSession, getSessions } from './api'
+import {
+  examDurationOptions,
+  nextSessionCode,
+  scheduledEnd,
+  toLocalDateTimeInput,
+  type ExamDurationMinutes,
+} from './sessionForm'
 import type { ExamSession, SessionInput, SessionStatus } from './types'
 
 const blank: SessionInput = { session_code: '', exam_name: '', room_id: '', scheduled_start: null, scheduled_end: null, runtime_profile: null }
@@ -28,8 +35,11 @@ export function SessionsPage() {
   const toast = useToast()
   const canCreate = can(permissions.sessionManage)
   const [items, setItems] = useState<ExamSession[]>([])
+  const [recentSessions, setRecentSessions] = useState<ExamSession[]>([])
+  const [sessionTotal, setSessionTotal] = useState(0)
   const [rooms, setRooms] = useState<Room[]>([])
   const [form, setForm] = useState<SessionInput>(blank)
+  const [durationMinutes, setDurationMinutes] = useState<ExamDurationMinutes>(45)
   const [showForm, setShowForm] = useState(false)
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebouncedValue(query)
@@ -46,6 +56,10 @@ export function SessionsPage() {
     try {
       const result = await getSessions({ query: search, page: targetPage, pageSize, status: selectedStatus || undefined })
       setItems(result.items); setTotal(result.total)
+      if (!search.trim() && !selectedStatus && targetPage === 1) {
+        setRecentSessions(result.items)
+        setSessionTotal(result.total)
+      }
     } catch (requestError) { setError(apiContentErrorMessage(requestError)) }
     finally { setLoading(false) }
   }, [])
@@ -56,19 +70,41 @@ export function SessionsPage() {
     getRooms({ pageSize: 100 }).then((result) => setRooms(result.items.filter((room) => room.is_active))).catch((requestError) => setError(apiContentErrorMessage(requestError)))
   }, [canCreate])
 
+  const openCreateForm = () => {
+    if (showForm) {
+      setShowForm(false)
+      return
+    }
+    setDurationMinutes(45)
+    setForm({
+      ...blank,
+      session_code: nextSessionCode(recentSessions, sessionTotal),
+      scheduled_start: toLocalDateTimeInput(new Date()),
+    })
+    setFieldErrors({})
+    setShowForm(true)
+  }
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const normalized = { ...form, session_code: form.session_code.trim(), exam_name: form.exam_name.trim() }
+    const normalized = {
+      ...form,
+      session_code: form.session_code.trim(),
+      exam_name: form.exam_name.trim(),
+      scheduled_end: scheduledEnd(form.scheduled_start, durationMinutes),
+    }
     const validation = validateSession(normalized)
     setFieldErrors(validation)
     if (hasErrors(validation)) return
     setSaving(true); setError(null)
     try {
-      await createSession({
+      const created = await createSession({
         ...normalized,
         scheduled_start: normalized.scheduled_start ? new Date(normalized.scheduled_start).toISOString() : null,
         scheduled_end: normalized.scheduled_end ? new Date(normalized.scheduled_end).toISOString() : null,
       })
+      setRecentSessions((current) => [created, ...current].slice(0, pageSize))
+      setSessionTotal((current) => current + 1)
       toast.success('Đã thêm phiên thi.')
       setForm(blank); setShowForm(false); await load(debouncedQuery, page, statusFilter)
     } catch (requestError) {
@@ -81,14 +117,14 @@ export function SessionsPage() {
   if (loading && items.length === 0 && !query && !statusFilter) return <LoadingState message="Đang tải danh sách phiên thi…" />
 
   return <div className="page-stack">
-    <PageHeader eyebrow="NGHIỆP VỤ" title="Phiên thi" actions={canCreate && <button className="primary-button" type="button" onClick={() => { setShowForm(!showForm); setFieldErrors({}) }}>Thêm mới</button>} />
+    <PageHeader eyebrow="NGHIỆP VỤ" title="Phiên thi" actions={canCreate && <button className="primary-button" type="button" onClick={openCreateForm}>Thêm mới</button>} />
     {error && <ErrorState message={error} onRetry={() => void load(debouncedQuery, page, statusFilter)} />}
     {showForm && <section className="card"><h2>Thêm phiên thi</h2><form className="form-grid" onSubmit={submit} noValidate>
-      <FormField label="Mã phiên thi" htmlFor="session-code" required error={fieldErrors.session_code}><input id="session-code" maxLength={100} value={form.session_code} onChange={(event) => setForm({ ...form, session_code: event.target.value })} /></FormField>
+      <FormField label="Mã phiên thi" htmlFor="session-code" required error={fieldErrors.session_code} helper="Mã được tạo tự động theo phiên thi gần nhất."><input id="session-code" maxLength={100} value={form.session_code} readOnly /></FormField>
       <FormField label="Tên kỳ thi" htmlFor="exam-name" required error={fieldErrors.exam_name}><input id="exam-name" maxLength={255} value={form.exam_name} onChange={(event) => setForm({ ...form, exam_name: event.target.value })} /></FormField>
       <FormField label="Phòng thi" htmlFor="session-room" required error={fieldErrors.room_id}><select id="session-room" value={form.room_id} onChange={(event) => setForm({ ...form, room_id: event.target.value })}><option value="">Chọn phòng thi</option>{rooms.map((room) => <option value={room.id} key={room.id}>{room.code} — {room.name}</option>)}</select></FormField>
-      <FormField label="Bắt đầu dự kiến" htmlFor="scheduled-start"><input id="scheduled-start" type="datetime-local" value={form.scheduled_start ?? ''} onChange={(event) => setForm({ ...form, scheduled_start: event.target.value || null })} /></FormField>
-      <FormField label="Kết thúc dự kiến" htmlFor="scheduled-end" error={fieldErrors.scheduled_end}><input id="scheduled-end" type="datetime-local" value={form.scheduled_end ?? ''} onChange={(event) => setForm({ ...form, scheduled_end: event.target.value || null })} /></FormField>
+      <FormField label="Thời gian bắt đầu" htmlFor="scheduled-start"><input id="scheduled-start" type="datetime-local" value={form.scheduled_start ?? ''} onChange={(event) => setForm({ ...form, scheduled_start: event.target.value || null })} /></FormField>
+      <FormField label="Thời gian thi" htmlFor="exam-duration" error={fieldErrors.scheduled_end} helper={form.scheduled_start ? `Kết thúc dự kiến: ${formatDateTime(scheduledEnd(form.scheduled_start, durationMinutes))}` : undefined}><select id="exam-duration" value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value) as ExamDurationMinutes)}>{examDurationOptions.map((minutes) => <option key={minutes} value={minutes}>{minutes} phút</option>)}</select></FormField>
       <div className="button-row"><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Đang lưu…' : 'Lưu'}</button><button className="secondary-button" type="button" onClick={() => setShowForm(false)}>Hủy</button></div>
     </form></section>}
     <form className="filter-row" role="search" onSubmit={(event) => { event.preventDefault(); setPage(1); void load(query, 1, statusFilter) }}>

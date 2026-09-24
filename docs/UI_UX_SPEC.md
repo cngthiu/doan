@@ -5,7 +5,7 @@ Users should operate the system without understanding AI internals.
 
 Normal workflow:
 ```text
-Login → Monitoring → Select/Create Session → Select Room → Upload Video → Assign Candidates → Start
+Login → Monitoring → Select/Create Session → Select Room → Upload Video → Start
 ```
 
 Appeal workflow:
@@ -51,7 +51,7 @@ Do not use red for normal tracking boxes. Avoid neon/cyberpunk/rainbow tracks.
 Minimal centered form. No charts or AI metrics.
 
 ## Monitoring — no active session
-Show create/select session, select room, upload/select video, candidate-assignment summary and one primary button: Start Monitoring. No AI settings here.
+Show create/select session, select room, upload/select video and one primary button: Start Monitoring. Seat layout and Candidate assignment are optional advanced context and never block the default flow. No AI settings here.
 
 ## Candidate assignment
 Simple table:
@@ -72,8 +72,7 @@ Main area:
 - playback controls
 - fullscreen
 
-Normal labels use stable business context, for example `B03 • SV103`. Tentative matches show
-`Đang xác định…`; unassigned people receive no candidate label. Track ID and score are visible
+Normal labels use mapped business context such as `B03 • SV103` when available; otherwise they use the Stable Actor ID such as `A0007`. Tentative Seat matches may show `Đang xác định…`, but an unmapped actor still receives its Actor label. Track ID and score are visible
 only in development diagnostics.
 
 ## Side panel
@@ -102,8 +101,8 @@ Detailed metrics belong to Diagnostics drawer.
 ## Diagnostics drawer
 Show source/analysis FPS, detector/tracker/pipeline ms, GPU, VRAM, CPU, RAM, dropped frames, queue, active profile. Missing values show `—`, never mocked values.
 
-## Seat calibration
-Use a real video/camera frame plus editable seat rectangles. User can add/drag/resize/rename/delete/save. Never use a blank white canvas.
+## Seat calibration (optional advanced setup)
+Seat calibration is not a monitoring prerequisite. When used, use a real video/camera frame plus editable seat rectangles. User can add/drag/resize/rename/delete/save. Never use a blank white canvas.
 
 ## Sessions
 List exam name, room, date/time, status, candidate count, event count later and open/review action. No unnecessary charts.

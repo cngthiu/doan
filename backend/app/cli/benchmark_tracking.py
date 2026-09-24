@@ -15,7 +15,10 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from app.ai.detector.yolo import PersonDetector
-from app.ai.domain import suspicious_detection_overlaps
+from app.ai.domain import normalize_bbox, suspicious_detection_overlaps
+from app.ai.logical_tracking.appearance import HsvHistogramAppearanceEncoder
+from app.ai.logical_tracking.manager import LogicalTrackManager
+from app.ai.logical_tracking.types import LogicalTrackingDiagnostics, LogicalTrackObservation
 from app.ai.tracker.bytetrack import ByteTrackAdapter
 from app.monitoring.config import load_runtime_profile_from_paths
 from app.monitoring.decoder import VideoDecoder
@@ -161,6 +164,17 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     detector = PersonDetector(profile.detector)
     tracker = ByteTrackAdapter(profile.tracker)
+    logical_manager = None
+    if args.identity_experiment != "raw":
+        use_appearance = args.identity_experiment == "sparse_reid"
+        profile = profile.model_copy(
+            update={"reid": profile.reid.model_copy(update={"enabled": use_appearance})}
+        )
+        logical_manager = LogicalTrackManager(
+            profile.logical_tracking,
+            profile.reid,
+            HsvHistogramAppearanceEncoder() if use_appearance else None,
+        )
     decoder = VideoDecoder(args.video)
     interval_ms = 1000.0 / profile.analysis.target_fps
     start_ms = max(0, args.start_ms)
@@ -182,6 +196,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     vram_samples: list[float] = []
     cpu_util_samples: list[float] = []
     ram_used_samples: list[float] = []
+    logical_latencies: list[float] = []
+    logical_actor_ids: set[str] = set()
+    last_logical_diagnostics: LogicalTrackingDiagnostics | None = None
     next_metrics_at = 0.0
     target_ms = float(start_ms)
     wall_started = time.perf_counter()
@@ -200,6 +217,31 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             tracker_started = time.perf_counter()
             tracks = tracker.update(detections, packet.frame.shape[:2], packet.timestamp_ms)
             tracker_ms = (time.perf_counter() - tracker_started) * 1000
+            actor_ids: list[str] = []
+            if logical_manager is not None:
+                logical_started = time.perf_counter()
+                logical_snapshot = logical_manager.update(
+                    tuple(
+                        LogicalTrackObservation(
+                            track_id=track.track_id,
+                            bbox_norm=normalize_bbox(
+                                track.bbox_xyxy,
+                                packet.source_width,
+                                packet.source_height,
+                            ),
+                            confidence=track.confidence,
+                        )
+                        for track in tracks
+                    ),
+                    packet.timestamp_ms,
+                    packet.frame,
+                )
+                logical_latencies.append((time.perf_counter() - logical_started) * 1000)
+                actor_ids = [
+                    logical_snapshot.actors_by_track[track.track_id].actor_id for track in tracks
+                ]
+                logical_actor_ids.update(actor_ids)
+                last_logical_diagnostics = logical_snapshot.diagnostics
             pipeline_ms = (time.perf_counter() - pipeline_started) * 1000
             overlaps = suspicious_detection_overlaps(
                 detections,
@@ -244,6 +286,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     ),
                     "active_track_count": len(tracks),
                     "track_ids": " ".join(str(track.track_id) for track in tracks),
+                    "actor_ids": " ".join(actor_ids),
                     "track_boxes": json.dumps(
                         [
                             {
@@ -299,10 +342,28 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     wall_seconds = max(time.perf_counter() - wall_started, 1e-9)
     lifetimes_ms = [last - first for first, last in track_lifetimes.values()]
     evaluated_ms = rows[-1]["timestamp_ms"] - rows[0]["timestamp_ms"] if len(rows) > 1 else 0
+    logical_summary = None
+    if last_logical_diagnostics is not None:
+        logical_summary = {
+            "unique_actor_ids": len(logical_actor_ids),
+            "active_logical_actors": last_logical_diagnostics.active_logical_actors,
+            "lost_logical_actors": last_logical_diagnostics.lost_logical_actors,
+            "recoveries_total": last_logical_diagnostics.recoveries_total,
+            "motion_recoveries": last_logical_diagnostics.motion_recoveries,
+            "reid_recoveries": last_logical_diagnostics.reid_recoveries,
+            "ambiguous_recoveries": last_logical_diagnostics.ambiguous_recoveries,
+            "reid_requests_total": last_logical_diagnostics.reid_requests_total,
+            "reid_batches_total": last_logical_diagnostics.reid_batches_total,
+            "reid_dropped_stale": last_logical_diagnostics.reid_dropped_stale,
+            "reid_latency_ms_mean": last_logical_diagnostics.reid_latency_ms_mean,
+            "reid_latency_ms_p95": last_logical_diagnostics.reid_latency_ms_p95,
+        }
     report: dict[str, Any] = {
         "video": str(args.video),
         "profile": profile.profile,
         "device": profile.detector.device,
+        "identity_experiment": args.identity_experiment,
+        "logical_tracking_summary": logical_summary,
         "detector_config": profile.detector.model_dump(mode="json"),
         "tracker_config": profile.tracker.model_dump(mode="json"),
         "video_duration_evaluated_ms": evaluated_ms,
@@ -314,6 +375,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "detector": _latency_summary(detector_latencies[1:]),
             "tracker": _latency_summary(tracker_latencies[1:]),
             "pipeline": _latency_summary(pipeline_latencies[1:]),
+            "logical_tracking": _latency_summary(logical_latencies[1:]),
         },
         "first_frame_latency_ms": {
             "detector": detector_latencies[0] if detector_latencies else None,
@@ -387,6 +449,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         "duration_seconds": args.duration_seconds,
                         "realtime_seconds": args.realtime_seconds,
                         "device_override": args.device,
+                        "identity_experiment": args.identity_experiment,
                     },
                 },
                 sort_keys=False,
@@ -413,6 +476,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-root", type=Path, default=Path("/models"))
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--duration-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--identity-experiment",
+        choices=("raw", "motion", "sparse_reid"),
+        default="raw",
+        help="Run ByteTrack alone, logical motion recovery, or sparse appearance recovery",
+    )
     parser.add_argument("--device", help="Explicit benchmark-only device override, for example cpu")
     parser.add_argument("--detector-iou", type=float, help="Single-variable YOLO NMS IoU ablation")
     parser.add_argument(

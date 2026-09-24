@@ -43,11 +43,11 @@ def start_monitoring(
             "Only a READY session can start monitoring",
         )
     response = session_response(db, exam_session)
-    if not response.readiness.can_mark_ready or exam_session.video_asset_id is None:
+    if not response.readiness.room_active or exam_session.video_asset_id is None:
         raise ApiError(
             status.HTTP_409_CONFLICT,
             "SESSION_NOT_READY",
-            "Room, seat layout, candidate assignments, and video are required",
+            "An active room and source video are required",
         )
     asset = db.get(MediaAsset, exam_session.video_asset_id)
     if asset is None:

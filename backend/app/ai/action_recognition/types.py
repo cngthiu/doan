@@ -21,6 +21,7 @@ class ActionProposal:
     current_track_ids: tuple[int, ...]
     bbox_norm: tuple[float, float, float, float]
     timestamp_ms: int
+    actor_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +48,14 @@ class ActionPrediction:
     probabilities: tuple[float, ...]
     predicted_class: str
     confidence: float
+    actor_ids: tuple[str, ...] = ()
     model_name: str = "r3_tsm_r50_k400_diff_final"
 
     def as_dict(self, class_names: tuple[str, ...]) -> dict[str, Any]:
         return {
             "proposal_id": self.proposal_id,
             "proposal_type": self.proposal_type.value,
+            "actor_ids": list(self.actor_ids),
             "session_candidate_ids": [str(value) for value in self.session_candidate_ids],
             "seat_codes": list(self.seat_codes),
             "timestamp_ms": self.timestamp_ms,

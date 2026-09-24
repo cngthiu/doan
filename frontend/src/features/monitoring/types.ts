@@ -1,6 +1,7 @@
 export type RuntimeState = 'INACTIVE' | 'INITIALIZING' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'ERROR'
 export type AssignmentState = 'UNASSIGNED' | 'TENTATIVE' | 'ASSIGNED'
 export type SeatOccupancyState = 'EMPTY' | 'OCCUPIED' | 'GRACE'
+export type ActorState = 'ACTIVE' | 'LOST' | 'EXPIRED'
 
 export interface TrackIdentity {
   state: AssignmentState
@@ -11,6 +12,9 @@ export interface TrackIdentity {
 }
 
 export interface TrackingTrack {
+  actor_id: string
+  actor_state: ActorState
+  recovered: boolean
   track_id: number
   bbox_norm: [number, number, number, number]
   confidence: number
@@ -70,6 +74,20 @@ export interface RuntimeDiagnostics {
   tentative_tracks: number
   unassigned_tracks: number
   occupied_seats: number
+  active_logical_actors: number
+  lost_logical_actors: number
+  raw_track_count: number
+  recoveries_total: number
+  motion_recoveries: number
+  reid_recoveries: number
+  ambiguous_recoveries: number
+  reid_requests_total: number
+  reid_batches_total: number
+  reid_dropped_stale: number
+  logical_tracking_ms: number | null
+  reid_latency_ms_mean: number | null
+  reid_latency_ms_p95: number | null
+  dynamic_pairs: number
   grace_seats: number
   empty_seats: number
   seat_switches: number
@@ -117,6 +135,7 @@ export type ActionClass = 'normal' | 'suspicious_looking' | 'communicating' | 'e
 export interface ActionPrediction {
   proposal_id: string
   proposal_type: 'SINGLE' | 'PAIR'
+  actor_ids: string[]
   session_candidate_ids: string[]
   seat_codes: string[]
   timestamp_ms: number

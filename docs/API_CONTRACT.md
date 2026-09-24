@@ -104,6 +104,9 @@ Tracking message:
   "source_height": 1080,
   "tracks": [{
     "track_id": 17,
+    "actor_id": "A0007",
+    "actor_state": "ACTIVE",
+    "recovered": false,
     "bbox_norm": [0.214,0.182,0.326,0.784],
     "confidence": 0.91,
     "identity": {
@@ -125,10 +128,10 @@ Tracking message:
 ```
 Clients accept only increasing `tracking_seq` values for the active runtime instance/generation.
 Seek increments the runtime generation; runtime restart changes the runtime instance identifier.
-Tracking payloads do not include full Candidate objects. The frontend joins
+`actor_id` is the primary runtime identity; raw `track_id` is diagnostic and Seat/Candidate fields may be null. Tracking payloads do not include full Candidate objects. The frontend joins
 `session_candidate_id` with the ordinary session REST response. Raw detections are available
 only in development logs and benchmark CSV output.
-Diagnostics additionally include seat assignment latency, assigned/tentative/unassigned track
+Diagnostics additionally include active/lost logical actors, raw track count, motion/appearance recoveries, appearance request/batch/latency counters, logical tracking latency, dynamic pair count, and optional seat assignment latency, assigned/tentative/unassigned track
 counts, occupied/grace/empty seat counts, seat switches, and identity recoveries.
 
 Phase 6 publishes a separate low-frequency raw-action message (no Event write):

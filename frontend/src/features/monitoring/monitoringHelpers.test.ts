@@ -99,8 +99,11 @@ describe('tracking overlay helpers', () => {
     expect(shouldReconnect(4409)).toBe(false)
   })
 
-  it('shows stable seat/candidate identity and hides track IDs outside debug mode', () => {
+  it('shows Stable Actor ID without exposing raw Track ID outside debug mode', () => {
     const track = {
+      actor_id: 'A0007',
+      actor_state: 'ACTIVE' as const,
+      recovered: false,
       track_id: 17,
       bbox_norm: [0.1, 0.1, 0.3, 0.8] as [number, number, number, number],
       confidence: 0.9,
@@ -114,8 +117,29 @@ describe('tracking overlay helpers', () => {
     }
     const lookup = new Map([['assignment-3', 'SV103']])
     expect(trackingLabel(track, lookup)).toEqual(['B03 • SV103'])
-    expect(trackingLabel(track, lookup, true)).toEqual(['B03 • SV103', 'T17 • score=0.82'])
-    expect(trackingLabel({ ...track, identity: { ...track.identity, state: 'TENTATIVE' as const } }, lookup)).toEqual(['Đang xác định…'])
-    expect(trackingLabel({ ...track, identity: { state: 'UNASSIGNED' as const, seat_id: null, seat_code: null, session_candidate_id: null, score: null } }, lookup)).toEqual([])
+    expect(trackingLabel(track, lookup, true)).toEqual([
+      'B03 • SV103',
+      'A0007 • T17 • seat=0.82',
+    ])
+    expect(trackingLabel({
+      ...track,
+      identity: {
+        state: 'TENTATIVE' as const,
+        seat_id: 'seat-3',
+        seat_code: 'B03',
+        session_candidate_id: null,
+        score: 0.5,
+      },
+    }, lookup)).toEqual(['A0007'])
+    expect(trackingLabel({
+      ...track,
+      identity: {
+        state: 'UNASSIGNED' as const,
+        seat_id: null,
+        seat_code: null,
+        session_candidate_id: null,
+        score: null,
+      },
+    }, lookup)).toEqual(['A0007'])
   })
 })

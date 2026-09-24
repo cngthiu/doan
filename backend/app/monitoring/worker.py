@@ -24,6 +24,10 @@ from app.ai.domain import (
 )
 from app.ai.event_aggregation.runtime import EventAggregationRuntime
 from app.ai.event_aggregation.types import AggregatedEvent
+from app.ai.logical_tracking.appearance import HsvHistogramAppearanceEncoder
+from app.ai.logical_tracking.manager import LogicalTrackManager
+from app.ai.logical_tracking.neighbors import dynamic_neighbor_pairs
+from app.ai.logical_tracking.types import LogicalTrackObservation
 from app.ai.seat_identity.assignment import SeatAssignmentEngine
 from app.ai.seat_identity.types import AssignmentState, SeatIdentityContext, TrackIdentity
 from app.ai.tracker.bytetrack import ByteTrackAdapter
@@ -251,6 +255,12 @@ class VideoAnalysisWorker:
         try:
             detector = self._detector_factory(self.profile.detector)
             tracker = self._tracker_factory(self.profile.tracker)
+            appearance_encoder = (
+                HsvHistogramAppearanceEncoder() if self.profile.reid.enabled else None
+            )
+            logical_tracking = LogicalTrackManager(
+                self.profile.logical_tracking, self.profile.reid, appearance_encoder
+            )
             seat_assignment = self._seat_assignment_factory(
                 self.seat_identity_context,
                 self.profile.seat_assignment,
@@ -259,6 +269,8 @@ class VideoAnalysisWorker:
                 if self._action_model is None:
                     raise RuntimeError("Action recognition is enabled without a shared R3 model")
                 action_runtime = self._action_runtime_factory(
+                    identity_mode=self.profile.identity.mode,
+                    dynamic_neighbors_config=self.profile.dynamic_neighbors,
                     session_id=self.session_id,
                     runtime_instance_id=self.runtime_instance_id,
                     config=self.profile.action_recognition,
@@ -290,6 +302,7 @@ class VideoAnalysisWorker:
                 elif packet.generation != last_generation:
                     tracker.reset()
                     seat_assignment.reset()
+                    logical_tracking.reset()
                     if action_runtime is not None:
                         action_runtime.reset(packet.generation)
                     last_generation = packet.generation
@@ -335,8 +348,8 @@ class VideoAnalysisWorker:
                         continue
                     self._tracking_seq += 1
                     tracking_seq = self._tracking_seq
-                normalized_tracks = tuple(
-                    Track(
+                normalized_observations = tuple(
+                    LogicalTrackObservation(
                         track_id=item.track_id,
                         bbox_norm=normalize_bbox(
                             item.bbox_xyxy,
@@ -344,13 +357,29 @@ class VideoAnalysisWorker:
                             packet.source_height,
                         ),
                         confidence=item.confidence,
-                        identity=TrackIdentity(state=AssignmentState.UNASSIGNED),
                     )
                     for item in tracked
                 )
+                logical_snapshot = logical_tracking.update(
+                    normalized_observations,
+                    packet.timestamp_ms,
+                    packet.frame,
+                )
+                logical_tracks = tuple(
+                    Track(
+                        track_id=observation.track_id,
+                        bbox_norm=observation.bbox_norm,
+                        confidence=observation.confidence,
+                        identity=TrackIdentity(state=AssignmentState.UNASSIGNED),
+                        actor_id=logical_snapshot.actors_by_track[observation.track_id].actor_id,
+                        actor_state=logical_snapshot.actors_by_track[observation.track_id].state,
+                        recovered=logical_snapshot.actors_by_track[observation.track_id].recovered,
+                    )
+                    for observation in normalized_observations
+                )
                 seat_assignment_started = time.perf_counter()
                 seat_snapshot = seat_assignment.update(
-                    normalized_tracks,
+                    logical_tracks,
                     packet.timestamp_ms,
                 )
                 seat_assignment_ms = (time.perf_counter() - seat_assignment_started) * 1000
@@ -360,8 +389,14 @@ class VideoAnalysisWorker:
                         bbox_norm=track.bbox_norm,
                         confidence=track.confidence,
                         identity=seat_snapshot.identities[track.track_id],
+                        actor_id=track.actor_id,
+                        actor_state=track.actor_state,
+                        recovered=track.recovered,
                     )
-                    for track in normalized_tracks
+                    for track in logical_tracks
+                )
+                dynamic_pair_count = len(
+                    dynamic_neighbor_pairs(tracks, self.profile.dynamic_neighbors)
                 )
                 frame = TrackingFrame(
                     session_id=self.session_id,
@@ -446,6 +481,20 @@ class VideoAnalysisWorker:
                         seat_switches=seat_snapshot.seat_switches,
                         identity_recoveries=seat_snapshot.identity_recoveries,
                         profile=self.profile.profile,
+                        active_logical_actors=(logical_snapshot.diagnostics.active_logical_actors),
+                        lost_logical_actors=logical_snapshot.diagnostics.lost_logical_actors,
+                        raw_track_count=logical_snapshot.diagnostics.raw_track_count,
+                        recoveries_total=logical_snapshot.diagnostics.recoveries_total,
+                        motion_recoveries=logical_snapshot.diagnostics.motion_recoveries,
+                        reid_recoveries=logical_snapshot.diagnostics.reid_recoveries,
+                        ambiguous_recoveries=(logical_snapshot.diagnostics.ambiguous_recoveries),
+                        reid_requests_total=logical_snapshot.diagnostics.reid_requests_total,
+                        reid_batches_total=logical_snapshot.diagnostics.reid_batches_total,
+                        reid_dropped_stale=logical_snapshot.diagnostics.reid_dropped_stale,
+                        logical_tracking_ms=logical_snapshot.diagnostics.logical_tracking_ms,
+                        reid_latency_ms_mean=(logical_snapshot.diagnostics.reid_latency_ms_mean),
+                        reid_latency_ms_p95=logical_snapshot.diagnostics.reid_latency_ms_p95,
+                        dynamic_pairs=dynamic_pair_count,
                         active_single_proposals=(
                             action_diagnostics.active_single_proposals if action_diagnostics else 0
                         ),
@@ -523,19 +572,13 @@ class VideoAnalysisWorker:
                             else 0
                         ),
                         expired_ready_requests=(
-                            action_diagnostics.expired_ready_requests
-                            if action_diagnostics
-                            else 0
+                            action_diagnostics.expired_ready_requests if action_diagnostics else 0
                         ),
                         replaced_ready_requests=(
-                            action_diagnostics.replaced_ready_requests
-                            if action_diagnostics
-                            else 0
+                            action_diagnostics.replaced_ready_requests if action_diagnostics else 0
                         ),
                         action_batches_total=(
-                            action_diagnostics.action_batches_total
-                            if action_diagnostics
-                            else 0
+                            action_diagnostics.action_batches_total if action_diagnostics else 0
                         ),
                         single_predictions_per_second=(
                             action_diagnostics.single_predictions_per_second
@@ -601,21 +644,15 @@ class VideoAnalysisWorker:
                             event_diagnostics.candidate_fsms if event_diagnostics else 0
                         ),
                         active_fsms=(event_diagnostics.active_fsms if event_diagnostics else 0),
-                        cooldown_fsms=(
-                            event_diagnostics.cooldown_fsms if event_diagnostics else 0
-                        ),
+                        cooldown_fsms=(event_diagnostics.cooldown_fsms if event_diagnostics else 0),
                         events_created_total=(
                             event_diagnostics.events_created_total if event_diagnostics else 0
                         ),
                         events_suppressed_total=(
-                            event_diagnostics.events_suppressed_total
-                            if event_diagnostics
-                            else 0
+                            event_diagnostics.events_suppressed_total if event_diagnostics else 0
                         ),
                         events_deduplicated_total=(
-                            event_diagnostics.events_deduplicated_total
-                            if event_diagnostics
-                            else 0
+                            event_diagnostics.events_deduplicated_total if event_diagnostics else 0
                         ),
                         per_behavior_event_count=(
                             event_diagnostics.per_behavior_event_count

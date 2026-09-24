@@ -206,6 +206,7 @@ class ActionModelAdapter:
                     proposal_type=clip.proposal.proposal_type,
                     session_candidate_ids=clip.proposal.session_candidate_ids,
                     seat_codes=clip.proposal.seat_codes,
+                    actor_ids=clip.proposal.actor_ids,
                     timestamp_ms=clip.end_timestamp_ms,
                     probabilities=tuple(float(value) for value in row),
                     predicted_class=R3_CLASS_NAMES[class_index],

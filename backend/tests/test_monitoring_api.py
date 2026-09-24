@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketDisconnect
 
@@ -89,6 +89,9 @@ class FakeRuntimeManager:
                 "tracks": [
                     {
                         "track_id": 7,
+                        "actor_id": "A0001",
+                        "actor_state": "ACTIVE",
+                        "recovered": False,
                         "bbox_norm": [0.1, 0.2, 0.3, 0.8],
                         "confidence": 0.9,
                         "identity": {
@@ -207,6 +210,36 @@ def test_monitoring_lifecycle_transitions_and_audit(
     assert stored is not None and stored.status == "COMPLETED" and stored.actual_end is not None
     actions = set(db.scalars(select(AuditLog.action)))
     assert {"SESSION_STARTED", "SESSION_PAUSED", "SESSION_RESUMED", "SESSION_STOPPED"} <= actions
+
+
+def test_zero_seat_session_starts_monitoring(
+    client: TestClient,
+    db: Session,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(PersonDetector, "validate_environment", lambda _: None)
+    _, exam_session = prepare_ready_session(db, settings)
+    db.execute(delete(SessionCandidate).where(SessionCandidate.session_id == exam_session.id))
+    db.execute(delete(Seat).where(Seat.room_id == exam_session.room_id))
+    db.commit()
+    manager = FakeRuntimeManager()
+    client.app.state.monitoring_runtime = manager
+    headers = login(client)
+
+    detail = client.get(f"/api/v1/sessions/{exam_session.id}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["readiness"]["seat_layout_available"] is False
+    assert detail.json()["readiness"]["candidates_assigned"] == 0
+    assert detail.json()["readiness"]["can_mark_ready"] is True
+
+    started = client.post(
+        f"/api/v1/sessions/{exam_session.id}/start",
+        json={"timestamp_ms": 0},
+        headers=headers,
+    )
+    assert started.status_code == 200
+    assert manager.identity_context.seats == ()  # type: ignore[union-attr]
 
 
 def test_websocket_requires_auth_and_sends_typed_tracking(

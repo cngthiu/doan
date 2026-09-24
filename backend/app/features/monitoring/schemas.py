@@ -35,6 +35,9 @@ class TrackIdentityMessage(BaseModel):
 
 
 class TrackingTrackMessage(BaseModel):
+    actor_id: str = Field(min_length=1)
+    actor_state: Literal["ACTIVE", "LOST", "EXPIRED"]
+    recovered: bool = False
     track_id: int
     bbox_norm: tuple[float, float, float, float]
     confidence: float = Field(ge=0, le=1)
@@ -95,6 +98,20 @@ class DiagnosticsMessage(BaseModel):
     unassigned_tracks: int = Field(ge=0)
     occupied_seats: int = Field(ge=0)
     grace_seats: int = Field(ge=0)
+    active_logical_actors: int = Field(default=0, ge=0)
+    lost_logical_actors: int = Field(default=0, ge=0)
+    raw_track_count: int = Field(default=0, ge=0)
+    recoveries_total: int = Field(default=0, ge=0)
+    motion_recoveries: int = Field(default=0, ge=0)
+    reid_recoveries: int = Field(default=0, ge=0)
+    ambiguous_recoveries: int = Field(default=0, ge=0)
+    reid_requests_total: int = Field(default=0, ge=0)
+    reid_batches_total: int = Field(default=0, ge=0)
+    reid_dropped_stale: int = Field(default=0, ge=0)
+    logical_tracking_ms: float | None = Field(default=None, ge=0)
+    reid_latency_ms_mean: float | None = Field(default=None, ge=0)
+    reid_latency_ms_p95: float | None = Field(default=None, ge=0)
+    dynamic_pairs: int = Field(default=0, ge=0)
     empty_seats: int = Field(ge=0)
     seat_switches: int = Field(ge=0)
     identity_recoveries: int = Field(ge=0)

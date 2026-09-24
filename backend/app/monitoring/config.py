@@ -77,6 +77,57 @@ class SeatAssignmentConfig(BaseModel):
         return self
 
 
+class IdentityConfig(BaseModel):
+    mode: Literal["logical_track", "seat"] = "logical_track"
+
+
+class LogicalRecoveryConfig(BaseModel):
+    max_lost_ms: int = Field(default=5500, gt=0)
+    max_position_distance: float = Field(default=0.18, gt=0, le=1)
+    min_scale_similarity: float = Field(default=0.40, gt=0, le=1)
+    min_score: float = Field(default=0.55, ge=0, le=1)
+    ambiguity_margin: float = Field(default=0.08, ge=0, le=1)
+    position_weight: float = Field(default=0.55, ge=0)
+    motion_weight: float = Field(default=0.25, ge=0)
+    scale_weight: float = Field(default=0.20, ge=0)
+
+    @model_validator(mode="after")
+    def normalized_weights(self) -> LogicalRecoveryConfig:
+        total = self.position_weight + self.motion_weight + self.scale_weight
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError("logical recovery weights must sum to 1.0")
+        return self
+
+
+class LogicalTrackingConfig(BaseModel):
+    center_history_size: int = Field(default=6, ge=2, le=32)
+    raw_track_history_size: int = Field(default=8, ge=1, le=64)
+    recovery: LogicalRecoveryConfig = Field(default_factory=LogicalRecoveryConfig)
+
+
+class ReIdConfig(BaseModel):
+    enabled: bool = False
+    mode: Literal["on_demand"] = "on_demand"
+    encoder: Literal["hsv_histogram_v1"] = "hsv_histogram_v1"
+    max_batch_size: int = Field(default=16, gt=0, le=64)
+    min_similarity: float = Field(default=0.72, ge=-1, le=1)
+    appearance_weight: float = Field(default=0.45, ge=0, le=1)
+    min_combined_score: float = Field(default=0.68, ge=0, le=1)
+    ambiguity_margin: float = Field(default=0.06, ge=0, le=1)
+    prototype_alpha: float = Field(default=0.20, gt=0, le=1)
+    prototype_seed_delay_ms: int = Field(default=800, ge=0)
+    min_prototype_confidence: float = Field(default=0.50, ge=0, le=1)
+    max_request_age_ms: int = Field(default=250, gt=0)
+
+
+class DynamicNeighborsConfig(BaseModel):
+    enabled: bool = True
+    max_neighbors_per_actor: int = Field(default=2, ge=0, le=8)
+    max_horizontal_gap_ratio: float = Field(default=2.5, ge=0)
+    max_vertical_gap_ratio: float = Field(default=0.75, ge=0)
+    min_scale_similarity: float = Field(default=0.40, gt=0, le=1)
+
+
 class ActionRoiGeometryConfig(BaseModel):
     expand_x: float = Field(ge=0)
     expand_top: float = Field(ge=0)
@@ -220,6 +271,10 @@ class RuntimeProfile(BaseModel):
     detector: DetectorConfig
     tracker: ByteTrackConfig
     diagnostics: DiagnosticsConfig
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    logical_tracking: LogicalTrackingConfig = Field(default_factory=LogicalTrackingConfig)
+    reid: ReIdConfig = Field(default_factory=ReIdConfig)
+    dynamic_neighbors: DynamicNeighborsConfig = Field(default_factory=DynamicNeighborsConfig)
     seat_assignment: SeatAssignmentConfig = Field(default_factory=SeatAssignmentConfig)
     action_recognition: ActionRecognitionConfig = Field(default_factory=ActionRecognitionConfig)
     event_detection: EventDetectionConfig = Field(default_factory=EventDetectionConfig)
@@ -230,6 +285,10 @@ class RuntimeProfile(BaseModel):
     def event_detection_requires_action_runtime(self) -> RuntimeProfile:
         if self.event_detection.enabled and not self.action_recognition.enabled:
             raise ValueError("event detection requires action recognition to be enabled")
+        if self.event_detection.enabled and self.identity.mode != "seat":
+            raise ValueError(
+                "event detection persistence currently requires seat identity actor bindings"
+            )
         return self
 
 
@@ -302,6 +361,14 @@ def load_runtime_profile_from_paths(
         detector=DetectorConfig.model_validate(detector_payload),
         tracker=ByteTrackConfig.model_validate(_yaml_mapping(tracker_path)),
         diagnostics=DiagnosticsConfig.model_validate(payload.get("diagnostics")),
+        identity=IdentityConfig.model_validate(payload.get("identity") or {}),
+        logical_tracking=LogicalTrackingConfig.model_validate(
+            payload.get("logical_tracking") or {}
+        ),
+        reid=ReIdConfig.model_validate(payload.get("reid") or {}),
+        dynamic_neighbors=DynamicNeighborsConfig.model_validate(
+            payload.get("dynamic_neighbors") or {}
+        ),
         seat_assignment=SeatAssignmentConfig.model_validate(payload.get("seat_assignment") or {}),
         action_recognition=ActionRecognitionConfig.model_validate(action_payload),
         event_detection=EventDetectionConfig.model_validate(payload.get("event_detection") or {}),
