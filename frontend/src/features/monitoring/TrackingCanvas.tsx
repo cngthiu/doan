@@ -22,14 +22,10 @@ export function trackingLabel(
   const candidateCode = track.identity.session_candidate_id
     ? candidateCodes.get(track.identity.session_candidate_id)
     : undefined
-  labels.push(
-    candidateCode && track.identity.seat_code
-      ? `${track.identity.seat_code} • ${candidateCode}`
-      : track.actor_id,
-  )
+  labels.push(track.identity.seat_code ?? 'Chưa xác định vị trí')
   if (debug) {
     labels.push(
-      `${track.actor_id} • T${track.track_id}${track.recovered ? ' • recovered' : ''}${track.identity.score == null ? '' : ` • seat=${track.identity.score.toFixed(2)}`}`,
+      `${track.actor_id} • T${track.track_id}${candidateCode ? ` • ${candidateCode}` : ''}${track.recovered ? ' • recovered' : ''}${track.identity.score == null ? '' : ` • seat=${track.identity.score.toFixed(2)}`}`,
     )
   }
   return labels

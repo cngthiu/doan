@@ -6,7 +6,7 @@ import { hasErrors, validateCandidate, validateRoom, validateSession, valuesChan
 
 describe('chuẩn hiển thị tiếng Việt', () => {
   it('maps every current role and session status', () => {
-    expect(sessionStatusLabels.DRAFT).toBe('Bản nháp')
+    expect(sessionStatusLabels.DRAFT).toBe('Chưa bắt đầu')
     expect(sessionStatusLabels.READY).toBe('Sẵn sàng')
     expect(sessionStatusLabels.COMPLETED).toBe('Đã kết thúc')
     expect(roleLabels.SUPERVISOR).toBe('Giám thị')

@@ -5,6 +5,7 @@ import { LoginPage } from '../features/auth/LoginPage'
 import { ProtectedRoute } from '../features/auth/ProtectedRoute'
 import { AuditPage } from '../features/audit/AuditPage'
 import { CandidatesPage } from '../features/candidates/CandidatesPage'
+import { CamerasPage } from '../features/cameras/CamerasPage'
 import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { MonitoringPage } from '../features/monitoring/MonitoringPage'
 import { RoomsPage } from '../features/rooms/RoomsPage'
@@ -22,6 +23,7 @@ const routeElements = {
   'session-detail': <SessionDetailPage />,
   candidates: <CandidatesPage />,
   rooms: <RoomsPage />,
+  cameras: <CamerasPage />,
   users: <UsersPage />,
   audit: <AuditPage />,
 } satisfies Record<(typeof appRouteAccess)[number]['id'], ReactNode>

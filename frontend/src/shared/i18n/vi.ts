@@ -3,7 +3,7 @@ import type { RuntimeState } from '../../features/monitoring/types'
 import type { SessionStatus } from '../../features/sessions/types'
 
 export const sessionStatusLabels: Record<SessionStatus, string> = {
-  DRAFT: 'Bản nháp',
+  DRAFT: 'Chưa bắt đầu',
   READY: 'Sẵn sàng',
   RUNNING: 'Đang giám sát',
   PAUSED: 'Tạm dừng',
@@ -63,6 +63,14 @@ export const apiErrorLabels: Record<string, string> = {
   VIDEO_EMPTY: 'Tệp video đang trống.',
   VIDEO_TOO_LARGE: 'Video vượt quá dung lượng tải lên cho phép.',
   MEDIA_SAVE_FAILED: 'Không thể lưu video. Vui lòng thử lại.',
+  CAMERA_NOT_FOUND: 'Không tìm thấy camera.',
+  CAMERA_REQUIRED: 'Vui lòng chọn camera.',
+  CAMERA_DISABLED: 'Camera đã bị vô hiệu hóa.',
+  CAMERA_NOT_IN_ROOM: 'Camera không thuộc phòng thi đã chọn.',
+  CAMERA_IN_USE: 'Camera đang được sử dụng và chưa thể thay đổi.',
+  CAMERA_SAVE_FAILED: 'Không thể lưu camera. Vui lòng thử lại.',
+  CAMERA_SOURCE_MISSING: 'Không thể đọc video nguồn của camera.',
+  INVALID_SESSION_SOURCE: 'Nguồn giám sát của phiên không hợp lệ.',
   MEDIA_FILE_MISSING: 'Tệp video không còn khả dụng trên máy chủ.',
   VALIDATION_ERROR: 'Thông tin chưa hợp lệ. Vui lòng kiểm tra lại.',
 }

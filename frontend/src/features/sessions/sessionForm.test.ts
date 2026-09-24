@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { nextSessionCode, scheduledEnd, toLocalDateTimeInput } from './sessionForm'
+import { defaultSessionName, nextSessionCode, scheduledEnd, toLocalDateTimeInput } from './sessionForm'
 
 describe('session creation helpers', () => {
   it('increments the latest numeric session-code format', () => {
@@ -22,5 +22,6 @@ describe('session creation helpers', () => {
     const start = '2026-09-23T14:05'
     const expectedEnd = new Date(new Date(start).getTime() + 90 * 60_000).toISOString()
     expect(scheduledEnd(start, 90)).toBe(expectedEnd)
+    expect(defaultSessionName(date)).toBe('Phiên thi 23/09/2026 - 14:05')
   })
 })

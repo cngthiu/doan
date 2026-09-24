@@ -14,10 +14,11 @@ from app.ai.detector.yolo import PersonDetector
 from app.core.config import Settings
 from app.core.security import hash_password
 from app.db.models.audit import AuditLog
+from app.db.models.camera import Camera
 from app.db.models.candidate import Candidate
 from app.db.models.media import MediaAsset
 from app.db.models.room import Room, Seat
-from app.db.models.session import ExamSession, SessionCandidate
+from app.db.models.session import ExamSession, SessionCandidate, SessionSourceType
 from app.db.models.user import User, UserRole
 from app.features.monitoring.schemas import DiagnosticsMessage, TrackingMessage
 from app.monitoring.publisher import LatestWebSocketPublisher, Subscriber
@@ -50,6 +51,7 @@ class FakeRuntimeManager:
         **kwargs: object,
     ) -> dict[str, object]:
         self.identity_context = kwargs.get("seat_identity_context")
+        self.loop_source = kwargs.get("loop_source")
         self.state = "INITIALIZING"
         return status_payload(session_id, self.state)
 
@@ -197,6 +199,7 @@ def test_monitoring_lifecycle_transitions_and_audit(
     assert started.json()["state"] == "INITIALIZING"
     assert manager.identity_context.session_id == exam_session.id  # type: ignore[union-attr]
     assert manager.identity_context.seats[0].code == "A01"  # type: ignore[union-attr]
+    assert manager.loop_source is False
     assert db.get(ExamSession, exam_session.id).status == "RUNNING"  # type: ignore[union-attr]
     paused = client.post(f"{base}/pause", json={"timestamp_ms": 700}, headers=headers)
     assert paused.json()["state"] == "PAUSED"
@@ -210,6 +213,38 @@ def test_monitoring_lifecycle_transitions_and_audit(
     assert stored is not None and stored.status == "COMPLETED" and stored.actual_end is not None
     actions = set(db.scalars(select(AuditLog.action)))
     assert {"SESSION_STARTED", "SESSION_PAUSED", "SESSION_RESUMED", "SESSION_STOPPED"} <= actions
+
+
+def test_camera_session_starts_runtime_with_source_looping(
+    client: TestClient,
+    db: Session,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(PersonDetector, "validate_environment", lambda _: None)
+    _, exam_session = prepare_ready_session(db, settings)
+    camera = Camera(
+        name="Camera MON",
+        room_id=exam_session.room_id,
+        source_media_asset_id=exam_session.video_asset_id,
+        is_active=True,
+    )
+    db.add(camera)
+    db.flush()
+    exam_session.source_type = SessionSourceType.CAMERA.value
+    exam_session.camera_id = camera.id
+    db.commit()
+
+    manager = FakeRuntimeManager()
+    client.app.state.monitoring_runtime = manager
+    started = client.post(
+        f"/api/v1/sessions/{exam_session.id}/start",
+        json={"timestamp_ms": 0},
+        headers=login(client),
+    )
+
+    assert started.status_code == 200
+    assert manager.loop_source is True
 
 
 def test_zero_seat_session_starts_monitoring(

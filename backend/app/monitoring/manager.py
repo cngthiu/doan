@@ -63,6 +63,7 @@ class MonitoringRuntimeManager:
         video_path: Path,
         profile: RuntimeProfile,
         timestamp_ms: int,
+        loop_source: bool = False,
         seat_identity_context: SeatIdentityContext | None = None,
     ) -> dict[str, Any]:
         PersonDetector.validate_environment(profile.detector)
@@ -81,6 +82,7 @@ class MonitoringRuntimeManager:
                 video_path=video_path,
                 profile=profile,
                 start_timestamp_ms=timestamp_ms,
+                loop_source=loop_source,
                 publish=lambda message: self._publish(session_id, runtime_instance_id, message),
                 on_ready=lambda: self._mark_ready(session_id, runtime_instance_id),
                 on_complete=lambda: self._terminal(

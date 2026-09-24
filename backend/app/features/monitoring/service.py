@@ -10,7 +10,7 @@ from app.ai.detector.yolo import PersonDetector
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.db.models.media import MediaAsset
-from app.db.models.session import ExamSession, ExamSessionStatus
+from app.db.models.session import ExamSession, ExamSessionStatus, SessionSourceType
 from app.db.models.user import User
 from app.features.media.service import media_file_path
 from app.features.monitoring.identity_context import load_seat_identity_context
@@ -83,6 +83,7 @@ def start_monitoring(
             path,
             profile,
             timestamp_ms,
+            loop_source=exam_session.source_type == SessionSourceType.CAMERA.value,
             seat_identity_context=identity_context,
         )
     except (RuntimeError, ValueError) as error:

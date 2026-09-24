@@ -1,15 +1,23 @@
 import type { ExamSession } from './types'
 
-export const examDurationOptions = [45, 60, 90, 120] as const
+export const examDurationOptions = [30, 45, 60, 90, 120, 150, 180] as const
 
 export type ExamDurationMinutes = typeof examDurationOptions[number]
+
+export function defaultSessionName(date: Date): string {
+  const day = String(date.getDate()).padStart(2, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `Phiên thi ${day}/${month}/${date.getFullYear()} - ${hours}:${minutes}`
+}
 
 export function toLocalDateTimeInput(date: Date): string {
   const localTime = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
   return localTime.toISOString().slice(0, 16)
 }
 
-export function scheduledEnd(start: string | null, durationMinutes: ExamDurationMinutes): string | null {
+export function scheduledEnd(start: string | null, durationMinutes: number): string | null {
   if (!start) return null
   const startDate = new Date(start)
   if (Number.isNaN(startDate.getTime())) return null

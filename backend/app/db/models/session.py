@@ -18,12 +18,26 @@ class ExamSessionStatus(enum.StrEnum):
     ERROR = "ERROR"
 
 
+class SessionSourceType(enum.StrEnum):
+    CAMERA = "CAMERA"
+    VIDEO_UPLOAD = "VIDEO_UPLOAD"
+
+
 class ExamSession(TimestampMixin, Base):
     __tablename__ = "exam_sessions"
     __table_args__ = (
         CheckConstraint(
             "status IN ('DRAFT', 'READY', 'RUNNING', 'PAUSED', 'COMPLETED', 'CANCELLED', 'ERROR')",
             name="exam_session_status",
+        ),
+        CheckConstraint(
+            "source_type IN ('CAMERA', 'VIDEO_UPLOAD')",
+            name="exam_session_source_type",
+        ),
+        CheckConstraint(
+            "(source_type = 'VIDEO_UPLOAD' AND camera_id IS NULL) OR "
+            "(source_type = 'CAMERA' AND camera_id IS NOT NULL AND video_asset_id IS NOT NULL)",
+            name="exam_session_source_consistency",
         ),
     )
 
@@ -32,6 +46,12 @@ class ExamSession(TimestampMixin, Base):
     exam_name: Mapped[str] = mapped_column(String(255), nullable=False)
     room_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("rooms.id"), nullable=False)
     video_asset_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("media_assets.id"))
+    source_type: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=SessionSourceType.VIDEO_UPLOAD.value,
+    )
+    camera_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("cameras.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     scheduled_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     scheduled_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

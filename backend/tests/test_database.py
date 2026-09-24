@@ -12,6 +12,7 @@ DOMAIN_TABLES = {
     "appeal_cases",
     "appeal_events",
     "audit_logs",
+    "cameras",
     "candidates",
     "event_actors",
     "event_reviews",

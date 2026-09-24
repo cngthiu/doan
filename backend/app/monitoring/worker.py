@@ -48,6 +48,7 @@ class VideoAnalysisWorker:
         video_path: Path,
         profile: RuntimeProfile,
         start_timestamp_ms: int,
+        loop_source: bool = False,
         publish: Callable[[dict[str, Any]], None],
         on_ready: Callable[[], None],
         on_complete: Callable[[], None],
@@ -70,6 +71,7 @@ class VideoAnalysisWorker:
         self.profile = profile
         self.seat_identity_context = seat_identity_context or SeatIdentityContext.empty(session_id)
         self.clock = AnalysisClock(start_timestamp_ms)
+        self.loop_source = loop_source
         self._publish = publish
         self._on_ready = on_ready
         self._on_complete = on_complete
@@ -236,7 +238,19 @@ class VideoAnalysisWorker:
                 packet, discarded = decoder.read_for_timestamp(target_ms, generation)
                 self._decoder_drops += discarded
                 if packet is None:
-                    return
+                    if not self.loop_source:
+                        return
+                    with self._command_lock:
+                        self._generation += 1
+                        self._tracking_seq = 0
+                        generation = self._generation
+                        if self._event_aggregator is not None:
+                            self._event_aggregator.reset(generation)
+                    self._buffer.clear()
+                    decoder.seek(0)
+                    self.clock.seek(0)
+                    next_sample = time.monotonic()
+                    continue
                 self._buffer.put(packet)
                 next_sample = max(next_sample + interval, time.monotonic())
         except Exception as error:

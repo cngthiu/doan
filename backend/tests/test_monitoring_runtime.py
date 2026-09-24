@@ -580,3 +580,90 @@ def test_manager_rejects_duplicate_start_and_ignores_replaced_worker_callbacks(
     current = manager.status(session_id)
     assert current["state"] == "RUNNING"
     assert current["tracking_seq"] == 0
+
+
+def test_camera_source_loops_with_controlled_generation_reset() -> None:
+    messages: list[dict[str, Any]] = []
+    reached_second_generation = threading.Event()
+    completed = threading.Event()
+    errors: list[str] = []
+    decoders: list[Any] = []
+    trackers: list[FakeTracker] = []
+
+    class OneFrameLoopDecoder:
+        source_fps = 25.0
+        source_width = 100
+        source_height = 80
+
+        def __init__(self, _: Path) -> None:
+            self.emitted = False
+            self.seek_count = 0
+            self.released = False
+            decoders.append(self)
+
+        def seek(self, _: int) -> None:
+            self.emitted = False
+            self.seek_count += 1
+
+        def read_for_timestamp(
+            self,
+            _: int,
+            generation: int,
+        ) -> tuple[FramePacket | None, int]:
+            if self.emitted:
+                return None, 0
+            self.emitted = True
+            return (
+                FramePacket(
+                    frame=np.zeros((80, 100, 3), dtype=np.uint8),
+                    frame_id=0,
+                    timestamp_ms=0,
+                    source_width=100,
+                    source_height=80,
+                    generation=generation,
+                ),
+                0,
+            )
+
+        def release(self) -> None:
+            self.released = True
+
+    def publish(message: dict[str, Any]) -> None:
+        messages.append(message)
+        if message.get("type") == "tracking" and message.get("runtime_generation", 0) >= 1:
+            reached_second_generation.set()
+
+    def tracker_factory(config: object) -> FakeTracker:
+        tracker = FakeTracker(config)
+        trackers.append(tracker)
+        return tracker
+
+    worker = VideoAnalysisWorker(
+        session_id=uuid.uuid4(),
+        video_path=Path("camera-source.mp4"),
+        profile=profile(),
+        start_timestamp_ms=0,
+        loop_source=True,
+        publish=publish,
+        on_ready=lambda: None,
+        on_complete=completed.set,
+        on_error=errors.append,
+        detector_factory=FakeDetector,
+        tracker_factory=tracker_factory,
+        decoder_factory=OneFrameLoopDecoder,
+    )
+    started = time.monotonic()
+    worker.start()
+    assert reached_second_generation.wait(1)
+    elapsed = time.monotonic() - started
+    assert worker.stop() is True
+
+    tracking = [item for item in messages if item["type"] == "tracking"]
+    assert {item["runtime_generation"] for item in tracking} >= {0, 1}
+    assert all(item["timestamp_ms"] == 0 for item in tracking[:2])
+    assert elapsed >= 0.05
+    assert completed.is_set() is False
+    assert errors == []
+    assert decoders[0].seek_count >= 2
+    assert decoders[0].released is True
+    assert trackers[0].reset_count >= 1

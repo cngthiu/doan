@@ -1,3 +1,5 @@
+export type SessionSourceType = 'CAMERA' | 'VIDEO_UPLOAD'
+
 export type SessionStatus = 'DRAFT' | 'READY' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED' | 'ERROR'
 
 export interface SessionAssignment {
@@ -12,6 +14,9 @@ export interface ExamSession {
   exam_name: string
   room_id: string
   room: { id: string; code: string; name: string; is_active: boolean }
+  source_type: SessionSourceType
+  camera_id: string | null
+  camera: { id: string; name: string; is_active: boolean } | null
   video_asset_id: string | null
   video: {
     id: string
@@ -27,8 +32,12 @@ export interface ExamSession {
   status: SessionStatus
   scheduled_start: string | null
   scheduled_end: string | null
+  actual_start: string | null
+  actual_end: string | null
+  duration_minutes?: number
   runtime_profile: string | null
   created_by: string
+  created_by_user: { id: string; username: string; full_name: string | null }
   candidate_count: number
   assignments: SessionAssignment[]
   readiness: {
@@ -51,5 +60,6 @@ export interface SessionInput {
   room_id: string
   scheduled_start: string | null
   scheduled_end: string | null
+  duration_minutes?: number
   runtime_profile: string | null
 }

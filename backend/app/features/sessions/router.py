@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Query, status
@@ -36,6 +37,7 @@ def get_sessions(
     q: str | None = Query(default=None, max_length=255),
     session_status: Annotated[ExamSessionStatus | None, Query(alias="status")] = None,
     room_id: Annotated[uuid.UUID | None, Query()] = None,
+    scheduled_date: Annotated[date | None, Query(alias="date")] = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> Page[SessionResponse]:
@@ -46,6 +48,7 @@ def get_sessions(
         page=page,
         page_size=page_size,
         room_id=room_id,
+        scheduled_date=scheduled_date,
     )
     return Page(items=sessions, page=page, page_size=page_size, total=total)
 

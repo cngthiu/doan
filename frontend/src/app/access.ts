@@ -5,7 +5,7 @@ import type { UserRole } from '../features/auth/types'
 import type { IconName } from '../shared/components/Icon'
 
 export interface AppRouteAccess {
-  id: 'overview' | 'monitoring' | 'sessions' | 'session-detail' | 'candidates' | 'rooms' | 'users' | 'audit'
+  id: 'overview' | 'monitoring' | 'sessions' | 'session-detail' | 'candidates' | 'rooms' | 'cameras' | 'users' | 'audit'
   path: string
   permission: Permission
 }
@@ -26,35 +26,34 @@ export const appRouteAccess: readonly AppRouteAccess[] = [
   { id: 'session-detail', path: '/sessions/:id', permission: permissions.sessionRead },
   { id: 'candidates', path: '/candidates', permission: permissions.candidateRead },
   { id: 'rooms', path: '/settings/rooms', permission: permissions.roomManage },
+  { id: 'cameras', path: '/settings/cameras', permission: permissions.systemManage },
   { id: 'users', path: '/settings/users', permission: permissions.userManage },
   { id: 'audit', path: '/settings/audit', permission: permissions.auditRead },
 ]
 
 const navigationByRole: Readonly<Record<UserRole, readonly NavigationItem[]>> = {
   ADMIN: [
-    { label: 'Tổng quan', to: '/overview', icon: 'chart', permission: permissions.dashboardRead },
+    { label: 'Trang chủ', to: '/overview', icon: 'chart', permission: permissions.dashboardRead },
     { label: 'Giám sát', to: '/monitoring', icon: 'camera', permission: permissions.trackingRead },
     { label: 'Phiên thi', to: '/sessions', icon: 'calendar', permission: permissions.sessionRead },
-    { label: 'Thí sinh', to: '/candidates', icon: 'users', permission: permissions.candidateRead },
-    { label: 'Phòng thi', to: '/settings/rooms', icon: 'door', permission: permissions.roomManage, section: 'CÀI ĐẶT' },
-    { label: 'Người dùng', to: '/settings/users', icon: 'users', permission: permissions.userManage, section: 'CÀI ĐẶT' },
-    { label: 'Nhật ký hệ thống', to: '/settings/audit', icon: 'clipboard', permission: permissions.auditRead, section: 'CÀI ĐẶT' },
+    { label: 'Phòng thi', to: '/settings/rooms', icon: 'door', permission: permissions.roomManage, section: 'QUẢN TRỊ' },
+    { label: 'Camera', to: '/settings/cameras', icon: 'camera', permission: permissions.systemManage, section: 'QUẢN TRỊ' },
+    { label: 'Người dùng', to: '/settings/users', icon: 'users', permission: permissions.userManage, section: 'QUẢN TRỊ' },
+    { label: 'Hệ thống', to: '/settings/audit', icon: 'settings', permission: permissions.auditRead, section: 'HỆ THỐNG' },
   ],
   SUPERVISOR: [
+    { label: 'Trang chủ', to: '/overview', icon: 'chart', permission: permissions.dashboardRead },
     { label: 'Giám sát', to: '/monitoring', icon: 'camera', permission: permissions.trackingRead },
     { label: 'Phiên thi', to: '/sessions', icon: 'calendar', permission: permissions.sessionRead },
-    { label: 'Thí sinh', to: '/candidates', icon: 'users', permission: permissions.candidateRead },
   ],
   REVIEWER: [
+    { label: 'Trang chủ', to: '/overview', icon: 'chart', permission: permissions.dashboardRead },
     { label: 'Phiên thi', to: '/sessions', icon: 'calendar', permission: permissions.sessionRead },
-    { label: 'Thí sinh', to: '/candidates', icon: 'users', permission: permissions.candidateRead },
   ],
 }
 
-export function landingPathForRole(role: UserRole): string {
-  if (role === 'ADMIN') return '/overview'
-  if (role === 'SUPERVISOR') return '/monitoring'
-  return '/sessions'
+export function landingPathForRole(_role: UserRole): string {
+  return '/overview'
 }
 
 export function navigationForRole(role: UserRole): readonly NavigationItem[] {

@@ -95,6 +95,7 @@ MediaUploader = Annotated[User, Depends(require_permission(Permission.MEDIA_UPLO
 TrackingReader = Annotated[User, Depends(require_permission(Permission.TRACKING_READ))]
 UserManager = Annotated[User, Depends(require_permission(Permission.USER_MANAGE))]
 AuditReader = Annotated[User, Depends(require_permission(Permission.AUDIT_READ))]
+SystemManager = Annotated[User, Depends(require_permission(Permission.SYSTEM_MANAGE))]
 
 
 def get_media_reader(media_user: MediaUser) -> User:

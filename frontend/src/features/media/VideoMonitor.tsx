@@ -6,6 +6,8 @@ interface VideoMonitorProps {
   mediaUrl: string
   title: string
   overlay?: ReactNode
+  loop?: boolean
+  realtime?: boolean
   onPause?(video: HTMLVideoElement): void
   onPlay?(video: HTMLVideoElement): void
   onSeeking?(video: HTMLVideoElement): void

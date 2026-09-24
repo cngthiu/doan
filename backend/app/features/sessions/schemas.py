@@ -1,9 +1,9 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.db.models.session import ExamSessionStatus
+from app.db.models.session import ExamSessionStatus, SessionSourceType
 
 
 def normalize_code(value: str) -> str:
@@ -29,10 +29,11 @@ def normalize_optional(value: str | None) -> str | None:
 
 class SessionCreate(BaseModel):
     session_code: str = Field(min_length=1, max_length=100)
-    exam_name: str = Field(min_length=1, max_length=255)
+    exam_name: str = Field(min_length=3, max_length=100)
     room_id: uuid.UUID
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
+    duration_minutes: int | None = Field(default=None, ge=15, le=360)
     status: ExamSessionStatus = ExamSessionStatus.DRAFT
     runtime_profile: str | None = Field(default=None, max_length=100)
 
@@ -42,6 +43,11 @@ class SessionCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_schedule(self) -> "SessionCreate":
+        if self.duration_minutes is not None:
+            if self.scheduled_start is None:
+                raise ValueError("scheduled_start is required with duration_minutes")
+            if self.scheduled_end is None:
+                self.scheduled_end = self.scheduled_start + timedelta(minutes=self.duration_minutes)
         if (
             self.scheduled_start is not None
             and self.scheduled_end is not None
@@ -53,12 +59,14 @@ class SessionCreate(BaseModel):
 
 class SessionUpdate(BaseModel):
     session_code: str | None = Field(default=None, min_length=1, max_length=100)
-    exam_name: str | None = Field(default=None, min_length=1, max_length=255)
+    exam_name: str | None = Field(default=None, min_length=3, max_length=100)
     room_id: uuid.UUID | None = None
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
     status: ExamSessionStatus | None = None
     runtime_profile: str | None = Field(default=None, max_length=100)
+    source_type: SessionSourceType | None = None
+    camera_id: uuid.UUID | None = None
     video_asset_id: uuid.UUID | None = None
 
     _normalize_code = field_validator("session_code")(normalize_code)
@@ -73,6 +81,8 @@ class SessionUpdate(BaseModel):
             raise ValueError("room_id cannot be null")
         if "status" in self.model_fields_set and self.status is None:
             raise ValueError("status cannot be null")
+        if "source_type" in self.model_fields_set and self.source_type is None:
+            raise ValueError("source_type cannot be null")
         return self
 
 
@@ -125,6 +135,18 @@ class MediaSummary(BaseModel):
     size_bytes: int
 
 
+class CameraSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    is_active: bool
+
+
+class UserSummary(BaseModel):
+    id: uuid.UUID
+    username: str
+    full_name: str | None
+
+
 class SessionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -133,13 +155,19 @@ class SessionResponse(BaseModel):
     exam_name: str
     room_id: uuid.UUID
     room: RoomSummary
+    source_type: SessionSourceType
+    camera_id: uuid.UUID | None
+    camera: CameraSummary | None
     video_asset_id: uuid.UUID | None
     video: MediaSummary | None
     status: ExamSessionStatus
     scheduled_start: datetime | None
     scheduled_end: datetime | None
+    actual_start: datetime | None
+    actual_end: datetime | None
     runtime_profile: str | None
     created_by: uuid.UUID
+    created_by_user: UserSummary
     candidate_count: int
     assignments: list[SessionAssignmentResponse]
     readiness: SessionReadiness

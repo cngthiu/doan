@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import './monitoring.css'
 
 import { apiContentErrorMessage, apiErrorMessage } from '../../shared/api/errors'
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog'
@@ -7,18 +8,15 @@ import { EmptyState } from '../../shared/components/EmptyState'
 import { ErrorState } from '../../shared/components/ErrorState'
 import { LoadingState } from '../../shared/components/LoadingState'
 import { PageHeader } from '../../shared/components/PageHeader'
-import { useToast } from '../../shared/components/ToastProvider'
-import { formatFps, formatResolution } from '../../shared/formatters'
-import { useDebouncedValue } from '../../shared/hooks/useDebouncedValue'
-import { runtimeStateLabels, sessionStatusLabels } from '../../shared/i18n/vi'
-import { PermissionGate } from '../auth/PermissionGate'
+import { StatusBadge } from '../../shared/components/StatusBadge'
+import { formatDateTime, formatDurationMs, formatFps, formatResolution } from '../../shared/formatters'
+import { runtimeStateLabels } from '../../shared/i18n/vi'
 import { permissions, usePermissions } from '../auth/permissions'
 import { VideoMonitor } from '../media/VideoMonitor'
-import { VideoUpload } from '../media/VideoUpload'
-import type { MediaAsset } from '../media/types'
-import { getSessions, updateSession } from '../sessions/api'
-import { SessionReadinessPanel } from '../sessions/SessionReadinessPanel'
-import type { ExamSession } from '../sessions/types'
+import { getRooms } from '../rooms/api'
+import type { Room } from '../rooms/types'
+import { getSessions } from '../sessions/api'
+import type { ExamSession, SessionStatus } from '../sessions/types'
 import {
   getMonitoringStatus,
   pauseMonitoring,
@@ -27,9 +25,10 @@ import {
   startMonitoring,
   stopMonitoring,
 } from './api'
+import { StartMonitoringModal } from './StartMonitoringModal'
 import { TrackingCanvas } from './TrackingCanvas'
 import { isTrackingTimestampAligned, TrackingBuffer } from './trackingBuffer'
-import type { ActionPredictionMessage, MonitoringMessage, MonitoringStatus, RuntimeDiagnostics, SeatRuntime, TrackingTrack } from './types'
+import type { MonitoringMessage, MonitoringStatus, RuntimeDiagnostics, TrackingTrack } from './types'
 import { useMonitoringSocket } from './useMonitoringSocket'
 
 const inactiveStatus: MonitoringStatus = {
@@ -40,236 +39,211 @@ const inactiveStatus: MonitoringStatus = {
 }
 
 function metric(value: number | null | undefined, suffix = ''): string {
-  return value == null ? '—' : `${value.toFixed(1)}${suffix}`
+  return value === null || value === undefined ? '—' : `${value.toFixed(1)}${suffix}`
 }
 
 export function MonitoringPage() {
   const { can } = usePermissions()
-  const toast = useToast()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedSessionId = searchParams.get('session') ?? ''
   const canOperate = can(permissions.sessionMonitor)
-  const canManageSession = can(permissions.sessionManage)
-  const canUpload = can(permissions.mediaUpload) && canManageSession
+  const debugOverlay = import.meta.env.DEV && can(permissions.diagnosticsRead)
   const [sessions, setSessions] = useState<ExamSession[]>([])
-  const [selectedId, setSelectedId] = useState('')
-  const [sessionQuery, setSessionQuery] = useState('')
-  const debouncedSessionQuery = useDebouncedValue(sessionQuery)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [errorDetail, setErrorDetail] = useState<string | null>(null)
+  const [sessionTotal, setSessionTotal] = useState(0)
+  const [rooms, setRooms] = useState<Room[]>([])
+  const [selectedId, setSelectedId] = useState(requestedSessionId)
+  const [showStartModal, setShowStartModal] = useState(false)
+  const [pendingAutoStart, setPendingAutoStart] = useState<string | null>(null)
   const [runtime, setRuntime] = useState<MonitoringStatus>(inactiveStatus)
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null)
   const [activeTracks, setActiveTracks] = useState<TrackingTrack[]>([])
-  const [activeSeats, setActiveSeats] = useState<SeatRuntime[]>([])
-  const [latestActions, setLatestActions] = useState<ActionPredictionMessage | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
   const [synchronizing, setSynchronizing] = useState(false)
+  const [elapsedMs, setElapsedMs] = useState(0)
   const [overlayRevision, setOverlayRevision] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [errorDetail, setErrorDetail] = useState<string | null>(null)
   const [confirmStop, setConfirmStop] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const trackingBuffer = useRef(new TrackingBuffer())
   const synchronizingRef = useRef(false)
-  const lastTrackUiUpdate = useRef(0)
   const suppressVideoEvents = useRef(false)
-  const selected = sessions.find((item) => item.id === selectedId) ?? null
-  const runtimeActive = ['INITIALIZING', 'RUNNING', 'PAUSED'].includes(runtime.state)
-  const candidateCodes = useMemo(() => new Map(
-    (selected?.assignments ?? []).map((assignment) => [assignment.id, assignment.candidate.candidate_code]),
-  ), [selected])
-  const debugOverlay = import.meta.env.DEV && can(permissions.diagnosticsRead)
+  const lastTrackUiUpdate = useRef(0)
+  const runtimeStartedAt = useRef<number | null>(null)
 
-  const loadSessions = useCallback((search: string) => {
-    setLoading(true)
-    getSessions({ query: search, pageSize: 20 })
-      .then((result) => setSessions(result.items))
-      .catch((requestError) => setError(apiContentErrorMessage(requestError)))
-      .finally(() => setLoading(false))
+  const selected = sessions.find((session) => session.id === selectedId) ?? null
+  const runtimeActive = ['INITIALIZING', 'RUNNING', 'PAUSED'].includes(runtime.state)
+  const candidateCodes = useMemo(() => new Map(selected?.assignments.map((item) => [item.id, item.candidate.candidate_code]) ?? []), [selected])
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null)
+    try {
+      const [sessionPage, roomPage] = await Promise.all([
+        getSessions({ pageSize: 20 }),
+        canOperate ? getRooms({ pageSize: 100 }) : Promise.resolve({ items: [], total: 0, page: 1, page_size: 100 }),
+      ])
+      setSessions(sessionPage.items); setSessionTotal(sessionPage.total)
+      setRooms(roomPage.items.filter((room) => room.is_active))
+      const requested = sessionPage.items.find((item) => item.id === requestedSessionId)
+      const active = sessionPage.items.find((item) => item.status === 'RUNNING' || item.status === 'PAUSED')
+      const target = requested ?? active
+      if (target) {
+        setSelectedId(target.id)
+        runtimeStartedAt.current = target.actual_start ? new Date(target.actual_start).getTime() : null
+      }
+    } catch (requestError) { setError(apiContentErrorMessage(requestError)) }
+    finally { setLoading(false) }
+  }, [canOperate, requestedSessionId])
+
+  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    trackingBuffer.current.reset(); setActiveTracks([]); setDiagnostics(null); setElapsedMs(0); setSynchronizing(false); synchronizingRef.current = false; setOverlayRevision((value) => value + 1)
+    if (!selectedId) { setRuntime(inactiveStatus); setDiagnostics(null); return }
+    getMonitoringStatus(selectedId).then((status) => { setRuntime(status); setDiagnostics(status.diagnostics) }).catch((requestError) => setError(apiContentErrorMessage(requestError)))
+  }, [selectedId])
+  useEffect(() => {
+    if (!runtimeActive) return
+    const timer = window.setInterval(() => {
+      const startedAt = runtimeStartedAt.current
+      setElapsedMs(startedAt ? Math.max(0, Date.now() - startedAt) : Math.round((videoRef.current?.currentTime ?? 0) * 1000))
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [runtimeActive])
+
+  const resetTracking = useCallback((sync = false) => {
+    trackingBuffer.current.clearFrames(); setActiveTracks([])
+    setSynchronizing(sync); synchronizingRef.current = sync
+    setOverlayRevision((value) => value + 1)
   }, [])
 
-  useEffect(() => { loadSessions(debouncedSessionQuery) }, [debouncedSessionQuery, loadSessions])
-
   useEffect(() => {
-    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setDiagnostics(null); setLatestActions(null); setActionError(null); setSynchronizing(false); synchronizingRef.current = false
-    setOverlayRevision((value) => value + 1)
-    if (!selectedId) { setRuntime(inactiveStatus); return }
-    getMonitoringStatus(selectedId)
-      .then((status) => {
-        setRuntime(status); setDiagnostics(status.diagnostics)
-        if (status.runtime_instance_id && status.runtime_generation != null) {
-          trackingBuffer.current.activateRuntime(status.runtime_instance_id, status.runtime_generation)
-        }
-      })
-      .catch((requestError) => setError(apiContentErrorMessage(requestError)))
-  }, [selectedId])
+    if (runtime.state !== 'RUNNING' || !selected?.video || !videoRef.current || pendingAutoStart) return
+    const video = videoRef.current
+    const latestTimestampMs = runtime.diagnostics?.latest_timestamp_ms
+    suppressVideoEvents.current = true
+    if (latestTimestampMs !== undefined && Number.isFinite(latestTimestampMs)) {
+      video.currentTime = Math.max(0, latestTimestampMs / 1000)
+      resetTracking(true)
+    }
+    video.muted = true
+    void video.play().finally(() => {
+      window.setTimeout(() => { suppressVideoEvents.current = false }, 0)
+    })
+  }, [pendingAutoStart, resetTracking, runtime.diagnostics?.latest_timestamp_ms, runtime.state, selected?.id, selected?.video])
 
   const handleSocketMessage = useCallback((message: MonitoringMessage) => {
     if (message.type === 'tracking') {
       if (synchronizingRef.current && !isTrackingTimestampAligned(message.timestamp_ms, (videoRef.current?.currentTime ?? 0) * 1000)) return
       const inserted = trackingBuffer.current.insert(message)
       if (!inserted.accepted) return
-      if (inserted.reset) {
-        setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null)
-        setOverlayRevision((value) => value + 1)
-      }
-      synchronizingRef.current = false
-      setSynchronizing(false)
+      if (inserted.reset) { setActiveTracks([]); setOverlayRevision((value) => value + 1) }
+      synchronizingRef.current = false; setSynchronizing(false)
       const now = performance.now()
       if (now - lastTrackUiUpdate.current >= 250) {
-        lastTrackUiUpdate.current = now
-        setActiveTracks(message.tracks)
-        setActiveSeats(message.seats)
+        lastTrackUiUpdate.current = now; setActiveTracks(message.tracks)
       }
-    } else if (message.type === 'diagnostics') {
-      const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
-      if (!active.accepted) return
-      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setOverlayRevision((value) => value + 1) }
-      setDiagnostics(message)
-    } else if (message.type === 'action_prediction') {
-      const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
-      if (!active.accepted) return
-      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setOverlayRevision((value) => value + 1) }
-      setLatestActions(message); setActionError(null)
-    } else if (message.type === 'action_error') {
-      const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
-      if (!active.accepted) return
-      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setOverlayRevision((value) => value + 1) }
-      setActionError(message.error)
-    } else {
-      const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
-      if (!active.accepted) return
-      if (active.reset) { setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setOverlayRevision((value) => value + 1) }
-      setRuntime((current) => ({ ...current, state: message.state, error: message.error }))
-      synchronizingRef.current = message.synchronizing
-      setSynchronizing(message.synchronizing)
-      if (message.state === 'ERROR') {
-        trackingBuffer.current.clearFrames()
-        synchronizingRef.current = false
-        setSynchronizing(false)
-        setActiveTracks([])
-        setActiveSeats([])
-        setLatestActions(null)
-        setActionError(null)
-        setOverlayRevision((value) => value + 1)
-        setError('Không thể khởi tạo hoặc duy trì AI.')
-        setErrorDetail(message.error)
-      }
+      return
     }
-  }, [])
+    if (message.type === 'diagnostics') {
+      const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
+      if (!active.accepted) return
+      if (active.reset) resetTracking()
+      setDiagnostics(message)
+      return
+    }
+    if (message.type !== 'state') return
+    const active = trackingBuffer.current.activateRuntime(message.runtime_instance_id, message.runtime_generation)
+    if (!active.accepted) return
+    if (active.reset) resetTracking()
+    setRuntime((current) => ({ ...current, state: message.state, error: message.error }))
+    setSynchronizing(message.synchronizing); synchronizingRef.current = message.synchronizing
+    if (message.state === 'ERROR') {
+      resetTracking(); setError('Không thể khởi tạo hoặc duy trì AI.'); setErrorDetail(message.error)
+    }
+  }, [resetTracking])
 
-  useEffect(() => () => {
-    trackingBuffer.current.reset()
-    const canvas = videoRef.current?.parentElement?.querySelector('canvas')
-    const context = canvas?.getContext('2d')
-    if (canvas && context) context.clearRect(0, 0, canvas.width, canvas.height)
-  }, [])
-
+  useEffect(() => () => trackingBuffer.current.reset(), [])
   const socketConnected = useMonitoringSocket({ sessionId: selectedId, enabled: runtimeActive, onMessage: handleSocketMessage })
-
-  const attachVideo = async (media: MediaAsset) => {
-    const updated = await updateSession(selectedId, { video_asset_id: media.id })
-    setSessions((current) => current.map((item) => item.id === updated.id ? updated : item))
-    toast.success('Đã gắn video nguồn vào phiên thi.')
-  }
 
   const perform = async (operation: () => Promise<MonitoringStatus>) => {
     setError(null); setErrorDetail(null)
     try {
-      const status = await operation()
-      setRuntime(status)
+      const status = await operation(); setRuntime(status)
+      const nextSessionStatus: SessionStatus | null = status.state === 'INACTIVE' ? null : status.state === 'INITIALIZING' ? 'RUNNING' : status.state
+      if (nextSessionStatus) setSessions((current) => current.map((item) => item.id === selectedId ? { ...item, status: nextSessionStatus } : item))
       if (status.diagnostics) setDiagnostics(status.diagnostics)
       return status
     } catch (requestError) {
-      setError('Không thể thực hiện thao tác giám sát.')
-      setErrorDetail(apiErrorMessage(requestError))
-      return null
+      setError('Không thể thực hiện thao tác giám sát.'); setErrorDetail(apiErrorMessage(requestError)); return null
     }
   }
 
-  const start = async () => {
-    if (!selected) return
+  const start = useCallback(async () => {
+    if (!selected || !videoRef.current) return
     const video = videoRef.current
-    if (!video) return
-    const timestampMs = Math.round(video.currentTime * 1000)
-    try {
-      await video.play()
-    } catch {
-      setError('Trình duyệt không thể bắt đầu phát video.')
-      return
-    }
-    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
-    const status = await perform(() => startMonitoring(selected.id, timestampMs))
-    if (!status) {
-      video.pause()
-      trackingBuffer.current.clearFrames()
-      synchronizingRef.current = false
-      setSynchronizing(false)
-      setActiveTracks([])
-      setActiveSeats([])
-      setLatestActions(null)
-      setActionError(null)
-      setOverlayRevision((value) => value + 1)
-    }
-  }
+    try { await video.play() } catch { setError('Trình duyệt không thể bắt đầu phát video.'); return }
+    trackingBuffer.current.reset(); resetTracking(true)
+    runtimeStartedAt.current = Date.now()
+    const status = await perform(() => startMonitoring(selected.id, Math.round(video.currentTime * 1000)))
+    if (!status) { suppressVideoEvents.current = true; video.pause(); resetTracking(); window.setTimeout(() => { suppressVideoEvents.current = false }, 0) }
+  }, [selected, resetTracking])
 
+  useEffect(() => {
+    if (!pendingAutoStart || selected?.id !== pendingAutoStart || !selected.video || !videoRef.current) return
+    setPendingAutoStart(null); void start()
+  }, [pendingAutoStart, selected, start])
+
+  const prepared = async (session: ExamSession) => {
+    setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)])
+    setSessionTotal((current) => current + 1); setSelectedId(session.id); setSearchParams({ session: session.id }); setShowStartModal(false); setPendingAutoStart(session.id)
+  }
   const onVideoPause = (video: HTMLVideoElement) => {
-    if (canOperate && !video.ended && !suppressVideoEvents.current && runtime.state === 'RUNNING') {
-      void perform(() => pauseMonitoring(selectedId, Math.round(video.currentTime * 1000)))
-    }
+    if (canOperate && !video.ended && !suppressVideoEvents.current && runtime.state === 'RUNNING') void perform(() => pauseMonitoring(selectedId, Math.round(video.currentTime * 1000)))
   }
-
-  const onVideoPlay = (video: HTMLVideoElement) => {
-    if (canOperate && !suppressVideoEvents.current && runtime.state === 'PAUSED') {
-      void perform(() => resumeMonitoring(selectedId))
-    }
+  const onVideoPlay = () => {
+    if (canOperate && !suppressVideoEvents.current && runtime.state === 'PAUSED') void perform(() => resumeMonitoring(selectedId))
   }
-
-  const onVideoSeeked = (video: HTMLVideoElement) => {
+  const seek = (video: HTMLVideoElement) => {
     if (!runtimeActive || !canOperate) return
-    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
-    void perform(() => seekMonitoring(selectedId, Math.round(video.currentTime * 1000)))
+    resetTracking(true); void perform(() => seekMonitoring(selectedId, Math.round(video.currentTime * 1000)))
   }
-
-  const onVideoSeeking = () => {
-    if (!runtimeActive || !canOperate) return
-    trackingBuffer.current.clearFrames(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(true); synchronizingRef.current = true; setOverlayRevision((value) => value + 1)
-  }
-
   const stop = async () => {
-    suppressVideoEvents.current = true
-    videoRef.current?.pause()
-    const status = await perform(() => stopMonitoring(selectedId))
-    trackingBuffer.current.reset(); setActiveTracks([]); setActiveSeats([]); setLatestActions(null); setActionError(null); setSynchronizing(false); synchronizingRef.current = false; setOverlayRevision((value) => value + 1)
-    if (status) setSessions((items) => items.map((item) => item.id === selectedId ? { ...item, status: 'COMPLETED' } : item))
+    suppressVideoEvents.current = true; videoRef.current?.pause()
+    const status = await perform(() => stopMonitoring(selectedId)); trackingBuffer.current.reset(); resetTracking()
+    if (status) {
+      setSessions((current) => current.map((item) => item.id === selectedId ? { ...item, status: 'COMPLETED' } : item))
+      navigate(`/sessions/${selectedId}`)
+    }
     window.setTimeout(() => { suppressVideoEvents.current = false }, 0)
   }
 
-  if (loading && sessions.length === 0) return <LoadingState message="Đang tải phiên thi…" />
+  if (loading && sessions.length === 0) return <LoadingState message="Đang tải giám sát…" />
 
-  return <div className="page-stack monitoring-page">
-    <PageHeader eyebrow="GIÁM SÁT" title="Giám sát" description="Phát video nguồn và theo dõi người theo thời gian thực." />
-    {error && <><ErrorState message={error} onRetry={() => loadSessions(debouncedSessionQuery)} />{errorDetail && can(permissions.diagnosticsRead) && <details className="error-detail"><summary>Chi tiết kỹ thuật</summary><code>{errorDetail}</code></details>}</>}
-    <section className="card monitoring-selector"><label htmlFor="monitoring-session-search">Tìm phiên thi</label><input id="monitoring-session-search" placeholder="Nhập mã hoặc tên kỳ thi…" value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} /><label htmlFor="monitoring-session">Phiên thi</label><select id="monitoring-session" value={selectedId} onChange={(event) => { setSelectedId(event.target.value); setError(null) }}><option value="">Chọn một phiên thi</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.session_code} — {item.exam_name} · {sessionStatusLabels[item.status]}</option>)}</select></section>
-    {!selected && <section className="card empty-panel"><EmptyState title="Chọn một phiên thi" description="Thông tin phòng thi, thí sinh và video sẽ xuất hiện tại đây." /></section>}
-    {selected && <SessionReadinessPanel session={selected} actions={<Link className="secondary-button link-button" to={`/sessions/${selected.id}`}>{canManageSession ? 'Hoàn thiện thiết lập' : 'Xem chi tiết phiên thi'}</Link>} />}
-    {selected && !selected.video && <section className="card"><h2>Phiên thi chưa có video</h2>{canUpload ? <VideoUpload onUploaded={attachVideo} /> : <p className="empty-copy">Bạn chỉ có quyền xem video đã được gắn vào phiên thi.</p>}</section>}
-    {selected?.video && <>
-      <section className="monitoring-summary"><div className="card"><span>Kỳ thi</span><strong>{selected.exam_name}</strong></div><div className="card"><span>Phòng thi</span><strong>{selected.room.code}</strong></div><div className="card"><span>Thí sinh</span><strong>{selected.candidate_count}</strong></div><div className="card"><span>Trạng thái</span><strong>{runtimeStateLabels[runtime.state]}</strong></div></section>
+  if (!selected) return <div className="page-stack monitoring-page">
+    <PageHeader eyebrow="GIÁM SÁT" title="Giám sát phòng thi" description="Tạo phiên và bắt đầu theo dõi chỉ trong một bước." actions={canOperate && <button className="primary-button start-monitoring-cta" type="button" onClick={() => setShowStartModal(true)}>Bắt đầu giám sát</button>} />
+    {error && <ErrorState message={error} onRetry={() => void load()} />}
+    <section className="monitoring-hero card"><div className="monitoring-hero-icon">▶</div><h2>Chưa có phiên đang giám sát</h2><p>Chọn video nguồn, hệ thống sẽ tự khởi tạo nhận diện người và theo dõi vị trí.</p>{canOperate && <button className="primary-button" type="button" onClick={() => setShowStartModal(true)}>Bắt đầu giám sát</button>}</section>
+    <section className="card recent-sessions"><div className="section-heading"><div><h2>Phiên gần đây</h2><p>Mở lại thông tin hoặc tiếp tục một phiên đã sẵn sàng.</p></div><Link className="secondary-button link-button" to="/sessions">Xem tất cả</Link></div>
+      {sessions.length ? <div className="recent-session-list">{sessions.slice(0, 6).map((session) => { const active = session.status === 'RUNNING' || session.status === 'PAUSED'; return <Link key={session.id} to={active ? `/monitoring?session=${session.id}` : `/sessions/${session.id}`}><span><strong>{session.exam_name}</strong><small>{session.room.code} · {session.camera?.name ?? (session.source_type === 'VIDEO_UPLOAD' ? 'Video tải lên' : 'Camera')} · {formatDateTime(session.scheduled_start)}</small></span><span><StatusBadge status={session.status} /><small>{active ? 'Mở giám sát' : 'Chi tiết'}</small></span></Link> })}</div> : <EmptyState title="Chưa có phiên thi." description="Bắt đầu phiên đầu tiên từ nút phía trên." />}
+    </section>
+    {showStartModal && <StartMonitoringModal rooms={rooms} recentSessions={sessions} sessionTotal={sessionTotal} onCancel={() => setShowStartModal(false)} onPrepared={prepared} />}
+  </div>
+
+  return <div className="page-stack monitoring-page live-monitoring-page">
+    <div className="live-header"><button className="back-button" type="button" disabled={runtimeActive} onClick={() => { setSelectedId(''); setSearchParams({}) }}>← Trở về</button><div><p className="eyebrow">ĐANG GIÁM SÁT</p><h1>{selected.exam_name}</h1><p>{selected.room.code} — {selected.room.name}</p></div><div className="live-header-status"><StatusBadge status={selected.status} /><strong>{formatDurationMs(elapsedMs)}</strong></div></div>
+    {error && <><ErrorState message={error} />{errorDetail && debugOverlay && <details className="error-detail"><summary>Chi tiết kỹ thuật</summary><code>{errorDetail}</code></details>}</>}
+    {selected.video ? <>
       <section className="monitoring-live-grid">
-        <div className="card monitoring-video-card">
-          <div className="media-summary"><strong>{selected.video.original_filename}</strong><span>{formatResolution(selected.video.width, selected.video.height)} · {formatFps(selected.video.fps, 2)} · 1.0×</span></div>
-          <VideoMonitor ref={videoRef} mediaUrl={selected.video.media_url} title={selected.video.original_filename} overlay={<><TrackingCanvas videoRef={videoRef} buffer={trackingBuffer.current} revision={overlayRevision} candidateCodes={candidateCodes} debug={debugOverlay} showConfidence={debugOverlay} />{synchronizing && <div className="sync-indicator">Đang đồng bộ AI…</div>}</>} onPause={onVideoPause} onPlay={onVideoPlay} onSeeking={onVideoSeeking} onSeeked={onVideoSeeked} onEnded={() => { if (runtimeActive && canOperate) void stop() }} />
-          <div className="monitoring-actions">{runtime.state === 'INACTIVE' && canOperate && <button className="primary-button" disabled={selected.status !== 'READY'} type="button" onClick={() => void start()}>Bắt đầu giám sát</button>}{runtime.state === 'INITIALIZING' && <button className="primary-button" disabled type="button">Đang khởi tạo AI…</button>}{runtime.state === 'RUNNING' && canOperate && <button className="secondary-button" type="button" onClick={() => videoRef.current?.pause()}>Tạm dừng</button>}{runtime.state === 'PAUSED' && canOperate && <button className="primary-button" type="button" onClick={() => void videoRef.current?.play()}>Tiếp tục</button>}{runtimeActive && canOperate && <button className="danger-button subtle" type="button" onClick={() => setConfirmStop(true)}>Kết thúc</button>}{selected.status !== 'READY' && runtime.state === 'INACTIVE' && <span className="secondary-text">Phiên thi cần ở trạng thái Sẵn sàng trước khi bắt đầu.</span>}</div>
+        <div className="card monitoring-video-card"><div className="media-summary"><strong>{selected.source_type === 'CAMERA' ? selected.camera?.name : selected.video.original_filename}</strong><span>{formatResolution(selected.video.width, selected.video.height)} · {formatFps(selected.video.fps, 2)}</span></div>
+          <VideoMonitor ref={videoRef} mediaUrl={selected.video.media_url} title={selected.camera?.name ?? selected.video.original_filename} loop={selected.source_type === 'CAMERA'} realtime={selected.source_type === 'CAMERA'} overlay={<><TrackingCanvas videoRef={videoRef} buffer={trackingBuffer.current} revision={overlayRevision} candidateCodes={candidateCodes} debug={debugOverlay} showConfidence={debugOverlay} />{(synchronizing || runtime.state === 'INITIALIZING') && <div className="sync-indicator">{runtime.state === 'INITIALIZING' ? 'Đang khởi tạo nhận diện người…' : 'Đang đồng bộ theo video…'}</div>}</>} onPause={onVideoPause} onPlay={onVideoPlay} onSeeking={selected.source_type === 'CAMERA' ? undefined : () => resetTracking(true)} onSeeked={selected.source_type === 'CAMERA' ? undefined : seek} onEnded={() => { if (selected.source_type === 'VIDEO_UPLOAD' && runtimeActive && canOperate) void stop() }} />
+          <div className="monitoring-actions">{runtime.state === 'INACTIVE' && canOperate && <button className="primary-button" disabled={selected.status !== 'READY'} type="button" onClick={() => void start()}>Bắt đầu giám sát</button>}{runtime.state === 'INITIALIZING' && <button className="primary-button" disabled type="button">Đang khởi tạo…</button>}{runtime.state === 'RUNNING' && canOperate && <button className="secondary-button" type="button" onClick={() => videoRef.current?.pause()}>Tạm dừng</button>}{runtime.state === 'PAUSED' && canOperate && <button className="primary-button" type="button" onClick={() => void videoRef.current?.play()}>Tiếp tục</button>}{runtimeActive && canOperate && <button className="danger-button subtle" type="button" onClick={() => setConfirmStop(true)}>Kết thúc giám sát</button>}</div>
         </div>
-        <aside className="card monitoring-side-panel"><p className="panel-label">TRẠNG THÁI</p><div className={`runtime-state ${runtime.state.toLowerCase()}`}><span />{runtimeStateLabels[runtime.state]}</div><strong className="person-count">{activeTracks.length} người</strong><p className="panel-label">NGƯỜI ĐANG THEO DÕI</p><p className="track-identity-note">Stable Actor ID hoạt động độc lập với cấu hình chỗ ngồi.</p><div className="track-list">{activeTracks.length ? [...activeTracks].sort((left, right) => left.actor_id.localeCompare(right.actor_id)).map((track) => {
-          const assignment = selected.assignments.find((item) => item.id === track.identity.session_candidate_id)
-          const seatRuntime = activeSeats.find((seat) => seat.track_id === track.track_id)
-          const status = track.recovered ? 'Đã nối lại dấu vết' : seatRuntime?.state === 'GRACE' ? 'Tạm mất dấu' : 'Đang theo dõi'
-          return <div key={track.actor_id}><strong>{assignment ? `${track.actor_id} • ${assignment.candidate.candidate_code}` : track.actor_id}</strong><span>{status}</span></div>
-        }) : <p className="secondary-text">Chưa phát hiện người trong khung hình.</p>}</div></aside>
+        <aside className="card monitoring-side-panel"><p className="panel-label">TRẠNG THÁI HỆ THỐNG</p><div className={`runtime-state ${runtime.state.toLowerCase()}`}><span />{runtimeStateLabels[runtime.state]}</div><dl className="runtime-summary-list"><div><dt>Video</dt><dd>{runtimeActive ? 'Đang phát' : 'Sẵn sàng'}</dd></div><div><dt>Nhận diện người</dt><dd>{diagnostics ? 'Hoạt động' : runtime.state === 'INITIALIZING' ? 'Đang khởi tạo' : 'Chờ'}</dd></div><div><dt>Theo dõi</dt><dd>{socketConnected ? 'Đã kết nối' : 'Chưa kết nối'}</dd></div><div><dt>Người hiện tại</dt><dd>{activeTracks.length}</dd></div><div><dt>Active tracks</dt><dd>{diagnostics?.active_logical_actors ?? activeTracks.length}</dd></div><div><dt>Lost tracks</dt><dd>{diagnostics?.lost_logical_actors ?? 0}</dd></div><div><dt>Nguồn</dt><dd>{selected.source_type === 'CAMERA' ? selected.camera?.name : 'Video tải lên'}</dd></div></dl></aside>
       </section>
-      <div className="monitoring-status-bar"><span className={socketConnected && runtime.state === 'RUNNING' ? 'online' : ''}>● {socketConnected ? 'AI trực tuyến' : 'AI ngoại tuyến'}</span><span>Video {formatFps(selected.video.fps)}</span><span>AI {metric(diagnostics?.analysis_fps, ' FPS')}</span><PermissionGate permission={permissions.diagnosticsRead}><><span>Độ trễ {metric(diagnostics?.pipeline_ms, ' ms')}</span><span>Sai lệch {metric(diagnostics?.analysis_lag_ms, ' ms')}</span></></PermissionGate></div>
-      {debugOverlay && <details className="card diagnostics-drawer"><summary>Chẩn đoán runtime</summary><div className="diagnostics-grid"><span>Runtime ID <strong>{diagnostics?.runtime_instance_id ?? runtime.runtime_instance_id ?? '—'}</strong></span><span>Generation <strong>{diagnostics?.runtime_generation ?? runtime.runtime_generation ?? '—'}</strong></span><span>Worker ID <strong>{diagnostics?.worker_instance_id ?? runtime.worker_instance_id ?? '—'}</strong></span><span>Tracker ID <strong>{diagnostics?.tracker_instance_id ?? runtime.tracker_instance_id ?? '—'}</strong></span><span>Tracking seq <strong>{diagnostics?.tracking_seq ?? runtime.tracking_seq}</strong></span><span>Latest AI timestamp <strong>{diagnostics ? `${diagnostics.latest_timestamp_ms} ms` : '—'}</strong></span><span>Raw detections <strong>{diagnostics?.raw_detection_count ?? '—'}</strong></span><span>Active tracks <strong>{diagnostics?.active_track_count ?? '—'}</strong></span><span>Logical active / lost <strong>{diagnostics ? diagnostics.active_logical_actors + ' / ' + diagnostics.lost_logical_actors : '—'}</strong></span><span>Raw tracks / dynamic pairs <strong>{diagnostics ? diagnostics.raw_track_count + ' / ' + diagnostics.dynamic_pairs : '—'}</strong></span><span>Motion / appearance recoveries <strong>{diagnostics ? diagnostics.motion_recoveries + ' / ' + diagnostics.reid_recoveries : '—'}</strong></span><span>Appearance requests / batches / dropped <strong>{diagnostics ? diagnostics.reid_requests_total + ' / ' + diagnostics.reid_batches_total + ' / ' + diagnostics.reid_dropped_stale : '—'}</strong></span><span>Logical ms / appearance P95 <strong>{diagnostics ? metric(diagnostics.logical_tracking_ms) + ' / ' + metric(diagnostics.reid_latency_ms_p95) + ' ms' : '—'}</strong></span><span>Assigned / tentative / unassigned <strong>{diagnostics ? `${diagnostics.assigned_tracks} / ${diagnostics.tentative_tracks} / ${diagnostics.unassigned_tracks}` : '—'}</strong></span><span>Occupied / grace / empty <strong>{diagnostics ? `${diagnostics.occupied_seats} / ${diagnostics.grace_seats} / ${diagnostics.empty_seats}` : '—'}</strong></span><span>Switches / recoveries <strong>{diagnostics ? `${diagnostics.seat_switches} / ${diagnostics.identity_recoveries}` : '—'}</strong></span><span>Source FPS <strong>{metric(diagnostics?.source_fps)}</strong></span><span>Analysis FPS <strong>{metric(diagnostics?.analysis_fps)}</strong></span><span>Target FPS <strong>{metric(diagnostics?.target_analysis_fps)}</strong></span><span>Detector <strong>{metric(diagnostics?.detector_ms, ' ms')}</strong></span><span>Tracker <strong>{metric(diagnostics?.tracker_ms, ' ms')}</strong></span><span>Seat assignment <strong>{metric(diagnostics?.seat_assignment_ms, ' ms')}</strong></span><span>Pipeline <strong>{metric(diagnostics?.pipeline_ms, ' ms')}</strong></span><span>Analysis lag <strong>{metric(diagnostics?.analysis_lag_ms, ' ms')}</strong></span><span>Action buffers / ROI frames <strong>{diagnostics ? `${diagnostics.active_action_buffers} / ${diagnostics.buffered_roi_frames}` : '—'}</strong></span><span>Latest raw action <strong>{latestActions ? `${latestActions.predictions.length} @ ${latestActions.timestamp_ms} ms` : '—'}</strong></span><span>Action error <strong>{actionError ?? '—'}</strong></span><span>GPU <strong>{metric(diagnostics?.gpu_util_pct, '%')}</strong></span><span>VRAM <strong>{metric(diagnostics?.vram_used_mb, ' MB')}</strong></span><span>CPU <strong>{metric(diagnostics?.cpu_util_pct, '%')}</strong></span><span>RAM <strong>{metric(diagnostics?.ram_used_mb, ' MB')}</strong></span><span>Dropped <strong>{diagnostics?.dropped_analysis_frames ?? '—'}</strong></span><span>Queue <strong>{diagnostics?.queue_size ?? '—'}</strong></span><span>Profile <strong>{diagnostics?.profile ?? runtime.profile ?? '—'}</strong></span></div></details>}
-      {debugOverlay && <details className="card diagnostics-drawer"><summary>Chẩn đoán Action Recognition</summary><div className="diagnostics-grid"><span>Single / Pair <strong>{diagnostics ? `${diagnostics.active_single_proposals} / ${diagnostics.active_pair_proposals}` : '—'}</strong></span><span>Scheduler ready / in-flight <strong>{diagnostics ? `${diagnostics.scheduler_ready_proposals} / ${diagnostics.scheduler_in_flight_proposals}` : '—'}</strong></span><span>Replaced / expired <strong>{diagnostics ? `${diagnostics.replaced_ready_requests} / ${diagnostics.expired_ready_requests}` : '—'}</strong></span><span>Predictions total / batches <strong>{diagnostics ? `${diagnostics.action_predictions_total} / ${diagnostics.action_batches_total}` : '—'}</strong></span><span>Single / Pair predictions/s <strong>{diagnostics ? `${metric(diagnostics.single_predictions_per_second)} / ${metric(diagnostics.pair_predictions_per_second)}` : '—'}</strong></span><span>Single interval mean / P95 <strong>{diagnostics ? `${metric(diagnostics.single_prediction_interval_ms_mean)} / ${metric(diagnostics.single_prediction_interval_ms_p95)} ms` : '—'}</strong></span><span>Pair interval mean / P95 <strong>{diagnostics ? `${metric(diagnostics.pair_prediction_interval_ms_mean)} / ${metric(diagnostics.pair_prediction_interval_ms_p95)} ms` : '—'}</strong></span><span>Prediction age mean / P95 <strong>{diagnostics ? `${metric(diagnostics.action_prediction_age_ms_mean)} / ${metric(diagnostics.action_prediction_age_ms_p95)} ms` : '—'}</strong></span><span>Preprocess mean / P95 <strong>{diagnostics ? `${metric(diagnostics.tsm_preprocess_ms_mean)} / ${metric(diagnostics.tsm_preprocess_ms_p95)} ms` : '—'}</strong></span><span>Forward mean / P95 <strong>{diagnostics ? `${metric(diagnostics.tsm_forward_ms_mean)} / ${metric(diagnostics.tsm_forward_ms_p95)} ms` : '—'}</strong></span><span>TSM mean / P95 <strong>{diagnostics ? `${metric(diagnostics.tsm_inference_ms_mean)} / ${metric(diagnostics.tsm_inference_ms_p95)} ms` : '—'}</strong></span><span>Pipeline mean / P95 <strong>{diagnostics ? `${metric(diagnostics.action_pipeline_ms_mean)} / ${metric(diagnostics.action_pipeline_ms_p95)} ms` : '—'}</strong></span><span>Batch mean / P95 <strong>{diagnostics ? `${metric(diagnostics.action_batch_size_mean)} / ${metric(diagnostics.action_batch_size_p95)}` : '—'}</strong></span><span>Queue depth / stale dropped <strong>{diagnostics ? `${diagnostics.action_queue_depth} / ${diagnostics.stale_action_requests_dropped}` : '—'}</strong></span><span>Device <strong>{diagnostics?.action_device ?? '—'}</strong></span><span>Top raw prediction <strong>{latestActions?.predictions[0] ? `${latestActions.predictions[0].predicted_class} (${metric(latestActions.predictions[0].confidence)})` : '—'}</strong></span></div></details>}
-    </>}
-    <ConfirmDialog open={confirmStop} title="Kết thúc giám sát?" description="Phiên thi sẽ chuyển sang Đã kết thúc. Hãy chắc chắn video và quá trình giám sát đã hoàn tất." confirmLabel="Kết thúc giám sát" danger onCancel={() => setConfirmStop(false)} onConfirm={() => { setConfirmStop(false); void stop() }} />
+      <div className="monitoring-status-bar"><span className={socketConnected && runtime.state === 'RUNNING' ? 'online' : ''}>● {socketConnected ? 'Hệ thống trực tuyến' : 'Đang chờ kết nối'}</span><span>Video {formatFps(selected.video.fps)}</span><span>Phân tích {metric(diagnostics?.analysis_fps, ' FPS')}</span>{debugOverlay && <><span>Độ trễ {metric(diagnostics?.analysis_lag_ms, ' ms')}</span><span>Queue {diagnostics?.queue_size ?? '—'}</span></>}</div>
+      {debugOverlay && <details className="card diagnostics-drawer"><summary>Chẩn đoán tracking</summary><div className="diagnostics-grid"><span>Raw tracks <strong>{diagnostics?.raw_track_count ?? '—'}</strong></span><span>Logical active / lost <strong>{diagnostics ? `${diagnostics.active_logical_actors} / ${diagnostics.lost_logical_actors}` : '—'}</strong></span><span>Recoveries <strong>{diagnostics?.recoveries_total ?? '—'}</strong></span><span>Dynamic pairs <strong>{diagnostics?.dynamic_pairs ?? '—'}</strong></span><span>Detector <strong>{metric(diagnostics?.detector_ms, ' ms')}</strong></span><span>Tracker <strong>{metric(diagnostics?.tracker_ms, ' ms')}</strong></span><span>GPU / VRAM <strong>{metric(diagnostics?.gpu_util_pct, '%')} / {metric(diagnostics?.vram_used_mb, ' MB')}</strong></span></div></details>}
+    </> : <section className="card"><EmptyState title="Phiên thi không có video nguồn." description="Không thể mở nguồn video của phiên này." /></section>}
+    <ConfirmDialog open={confirmStop} title="Kết thúc phiên giám sát?" description="Video realtime và quá trình theo dõi sẽ dừng." confirmLabel="Kết thúc" danger onCancel={() => setConfirmStop(false)} onConfirm={() => { setConfirmStop(false); void stop() }} />
   </div>
 }

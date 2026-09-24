@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 from fastapi import status
 from sqlalchemy import delete, func, or_, select
@@ -8,13 +8,20 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.errors import ApiError
+from app.db.models.camera import Camera
 from app.db.models.candidate import Candidate
 from app.db.models.media import MediaAsset
 from app.db.models.room import Room, Seat
-from app.db.models.session import ExamSession, ExamSessionStatus, SessionCandidate
+from app.db.models.session import (
+    ExamSession,
+    ExamSessionStatus,
+    SessionCandidate,
+    SessionSourceType,
+)
 from app.db.models.user import User
 from app.features.media.service import media_file_path, media_response
 from app.features.sessions.schemas import (
+    CameraSummary,
     CandidateSummary,
     MediaSummary,
     RoomSummary,
@@ -25,6 +32,7 @@ from app.features.sessions.schemas import (
     SessionReadiness,
     SessionResponse,
     SessionUpdate,
+    UserSummary,
 )
 from app.shared.audit import AuditAction, AuditService
 
@@ -133,6 +141,10 @@ def session_response(db: Session, exam_session: ExamSession) -> SessionResponse:
         for assignment, candidate, seat in rows
     ]
     readiness = _readiness(db, exam_session, room, exam_session.video_asset_id)
+    camera = db.get(Camera, exam_session.camera_id) if exam_session.camera_id else None
+    creator = db.get(User, exam_session.created_by)
+    if creator is None:
+        raise ApiError(status.HTTP_409_CONFLICT, "USER_NOT_FOUND", "Session creator was not found")
     video: MediaSummary | None = None
     if exam_session.video_asset_id is not None:
         asset = db.get(MediaAsset, exam_session.video_asset_id)
@@ -160,13 +172,25 @@ def session_response(db: Session, exam_session: ExamSession) -> SessionResponse:
         exam_name=exam_session.exam_name,
         room_id=exam_session.room_id,
         room=RoomSummary(id=room.id, code=room.code, name=room.name, is_active=room.is_active),
+        source_type=SessionSourceType(exam_session.source_type),
+        camera_id=exam_session.camera_id,
+        camera=(
+            CameraSummary(id=camera.id, name=camera.name, is_active=camera.is_active)
+            if camera is not None
+            else None
+        ),
         video_asset_id=exam_session.video_asset_id,
         video=video,
         status=ExamSessionStatus(exam_session.status),
         scheduled_start=exam_session.scheduled_start,
         scheduled_end=exam_session.scheduled_end,
+        actual_start=exam_session.actual_start,
+        actual_end=exam_session.actual_end,
         runtime_profile=exam_session.runtime_profile,
         created_by=exam_session.created_by,
+        created_by_user=UserSummary(
+            id=creator.id, username=creator.username, full_name=creator.full_name
+        ),
         candidate_count=readiness.candidates_assigned,
         assignments=assignments,
         readiness=readiness,
@@ -182,6 +206,7 @@ def list_sessions(
     page: int = 1,
     page_size: int = 20,
     room_id: uuid.UUID | None = None,
+    scheduled_date: date | None = None,
 ) -> tuple[list[SessionResponse], int]:
     statement = select(ExamSession).join(Room, Room.id == ExamSession.room_id)
     if query and (term := query.strip()):
@@ -198,6 +223,13 @@ def list_sessions(
         statement = statement.where(ExamSession.status == session_status.value)
     if room_id is not None:
         statement = statement.where(ExamSession.room_id == room_id)
+    if scheduled_date is not None:
+        day_start = datetime.combine(scheduled_date, time.min, tzinfo=UTC)
+        day_end = day_start + timedelta(days=1)
+        statement = statement.where(
+            ExamSession.scheduled_start >= day_start,
+            ExamSession.scheduled_start < day_end,
+        )
     total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0
     sessions = list(
         db.scalars(
@@ -225,7 +257,7 @@ def create_session(db: Session, payload: SessionCreate, actor: User) -> SessionR
             "Session code already exists",
             field_name="session_code",
         )
-    values = payload.model_dump()
+    values = payload.model_dump(exclude={"duration_minutes"})
     values["status"] = payload.status.value
     exam_session = ExamSession(**values, created_by=actor.id)
     db.add(exam_session)
@@ -276,39 +308,6 @@ def update_session(
             "INVALID_SESSION_STATE",
             "A session can only be edited or cancelled before monitoring starts",
         )
-    if "video_asset_id" in changes:
-        if exam_session.status not in {
-            ExamSessionStatus.DRAFT.value,
-            ExamSessionStatus.READY.value,
-        }:
-            raise ApiError(
-                status.HTTP_409_CONFLICT,
-                "INVALID_SESSION_STATE",
-                "Source video can only be changed in DRAFT or READY state",
-            )
-        video_asset_id = changes["video_asset_id"]
-        if video_asset_id is None and exam_session.status == ExamSessionStatus.READY.value:
-            raise ApiError(
-                status.HTTP_409_CONFLICT,
-                "SESSION_NOT_READY",
-                "A READY session must keep a valid source video",
-            )
-        if video_asset_id is not None:
-            if not isinstance(video_asset_id, uuid.UUID):
-                raise ApiError(
-                    status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    "MEDIA_NOT_FOUND",
-                    "Media was not found",
-                )
-            media = db.get(MediaAsset, video_asset_id)
-            if media is None:
-                raise ApiError(
-                    status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    "MEDIA_NOT_FOUND",
-                    "Media was not found",
-                )
-            media_response(media)
-            media_file_path(media, settings)
     new_code = changes.get("session_code")
     if isinstance(new_code, str) and db.scalar(
         select(ExamSession.id).where(
@@ -358,6 +357,82 @@ def update_session(
                 "Clear candidate assignments before changing the room",
                 field_name="room_id",
             )
+
+    if not (cancelling and set(changes) == {"status"}):
+        requested_source = SessionSourceType(
+            changes.get("source_type", exam_session.source_type)
+        )
+        if requested_source == SessionSourceType.CAMERA:
+            camera_id = changes.get("camera_id", exam_session.camera_id)
+            if not isinstance(camera_id, uuid.UUID):
+                raise ApiError(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "CAMERA_REQUIRED",
+                    "A camera is required for camera monitoring",
+                    field_name="camera_id",
+                )
+            camera = db.get(Camera, camera_id)
+            if camera is None:
+                raise ApiError(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "CAMERA_NOT_FOUND",
+                    "Camera was not found",
+                    field_name="camera_id",
+                )
+            if not camera.is_active:
+                raise ApiError(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "CAMERA_DISABLED",
+                    "Disabled camera cannot be selected",
+                    field_name="camera_id",
+                )
+            if camera.room_id != room_id:
+                raise ApiError(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "CAMERA_NOT_IN_ROOM",
+                    "Camera does not belong to the selected room",
+                    field_name="camera_id",
+                )
+            media = db.get(MediaAsset, camera.source_media_asset_id)
+            if media is None:
+                raise ApiError(
+                    status.HTTP_409_CONFLICT,
+                    "CAMERA_SOURCE_MISSING",
+                    "Camera source video was not found",
+                )
+            media_response(media)
+            media_file_path(media, settings)
+            changes["source_type"] = SessionSourceType.CAMERA.value
+            changes["camera_id"] = camera.id
+            changes["video_asset_id"] = camera.source_media_asset_id
+        else:
+            if changes.get("camera_id") is not None:
+                raise ApiError(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "INVALID_SESSION_SOURCE",
+                    "Uploaded video sessions cannot reference a camera",
+                    field_name="camera_id",
+                )
+            video_asset_id = changes.get("video_asset_id", exam_session.video_asset_id)
+            if video_asset_id is not None:
+                media = db.get(MediaAsset, video_asset_id)
+                if media is None:
+                    raise ApiError(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        "MEDIA_NOT_FOUND",
+                        "Media was not found",
+                        field_name="video_asset_id",
+                    )
+                media_response(media)
+                media_file_path(media, settings)
+            if video_asset_id is None and current_status == ExamSessionStatus.READY:
+                raise ApiError(
+                    status.HTTP_409_CONFLICT,
+                    "SESSION_NOT_READY",
+                    "A READY session must keep a valid source video",
+                )
+            changes["source_type"] = SessionSourceType.VIDEO_UPLOAD.value
+            changes["camera_id"] = None
 
     scheduled_start = changes.get("scheduled_start", exam_session.scheduled_start)
     scheduled_end = changes.get("scheduled_end", exam_session.scheduled_end)
